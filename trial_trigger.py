@@ -77,7 +77,7 @@ def trial_trigger(app_name):
     # make negative if decreasing
     curr_delta = counts[-1] - counts[-2]
 
-    threshold = 2 * average_delta  # Trigger if the increase is greater than twice the average
+    threshold = 1.2 * average_delta  # Trigger if the increase is greater than threshold
 
     # # TESTING
     # threshold = -99999
@@ -93,7 +93,7 @@ def trial_trigger(app_name):
     
     print(f"Average delta: {average_delta:.2f}")
     print(f"Current delta (last two days): {curr_delta}")
-    print(f"Threshold (2 x average delta): {threshold:.2f}")
+    print(f"Threshold: {threshold:.2f}")
 
     # Trigger if exceeds threshold.
     if (curr_delta) > threshold:

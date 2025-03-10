@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 import re
 from apify_client import ApifyClient
 
+from get_comments import get_comments
+from get_comments import get_comments_about_app
+
 # Load environment variables and set connection string.
 load_dotenv()
 CONN_STR = os.getenv('DATABASE_URL')
@@ -230,6 +233,11 @@ def trigger_view_scraper(app_name, event_id):
         delta_comments = new_comment_count - old_comment_count if new_comment_count is not None else None
         delta_likes = new_likes - old_num_likes if new_likes is not None else None
 
+        # Get the app comments
+        comments = get_comments(post_url)
+        app_comments = get_comments_about_app(comments)
+        print("Got comments, and filtered to those about the app.")
+
         print(f"  Updated Metrics -> Views: {new_view_count}, Comments: {new_comment_count}, Likes: {new_likes}")
         print(f"  Deltas          -> ΔViews: {delta_views}, ΔComments: {delta_comments}, ΔLikes: {delta_likes}\n")
 
@@ -251,8 +259,9 @@ def trigger_view_scraper(app_name, event_id):
                     delta_comments,
                     old_likes,
                     new_likes,
-                    delta_likes
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    delta_likes,
+                    app_comments
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
             """
             cursor.execute(insert_query, (
                 event_id,
@@ -267,7 +276,8 @@ def trigger_view_scraper(app_name, event_id):
                 delta_comments,
                 old_num_likes,
                 new_likes,
-                delta_likes
+                delta_likes,
+                app_comments
             ))
             conn.commit()
             cursor.close()
@@ -374,10 +384,13 @@ def hit_apify(url):
 # MAIN, run for each app
 if __name__ == "__main__":
     # Define your app names properly
-    APP_NAMES = ["saga", "berry", "haven", "astra"]
+    # APP_NAMES = ["saga", "berry", "haven", "astra"]
 
-    for app in APP_NAMES:
-        if trial_trigger(app):
-            print(app, ": Threshold exceeded, running scraper")
-        else:
-            print(app, ": Threshold NOT exceeded, NOT running scraper")
+    # for app in APP_NAMES:
+    #     if trial_trigger(app):
+    #         print(app, ": Threshold exceeded, running scraper")
+    #     else:
+    #         print(app, ": Threshold NOT exceeded, NOT running scraper")
+
+    # Test with a specific app
+    trial_trigger("berry")

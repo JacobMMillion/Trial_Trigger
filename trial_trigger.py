@@ -384,13 +384,10 @@ def hit_apify(url):
 # MAIN, run for each app
 if __name__ == "__main__":
     # Define your app names properly
-    # APP_NAMES = ["saga", "berry", "haven", "astra"]
+    APP_NAMES = ["saga", "berry", "haven", "astra"]
 
-    # for app in APP_NAMES:
-    #     if trial_trigger(app):
-    #         print(app, ": Threshold exceeded, running scraper")
-    #     else:
-    #         print(app, ": Threshold NOT exceeded, NOT running scraper")
-
-    # Test with a specific app
-    trial_trigger("berry")
+    for app in APP_NAMES:
+        if trial_trigger(app):
+            print(app, ": Threshold exceeded, running scraper")
+        else:
+            print(app, ": Threshold NOT exceeded, NOT running scraper")

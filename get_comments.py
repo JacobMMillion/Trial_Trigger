@@ -147,9 +147,8 @@ def get_comments_about_app(comments):
     
     # Construct a prompt that instructs ChatGPT to filter the comments.
     prompt = (
-        "Below is a list of comments. Please filter and return only those comments "
-        "that mention or relate to an app, a trial, or a download. Note that it does not actually have to explicitly name these things. "
-        "It may be ambiguous in some cases, edge on the side of inclusion. For example, if they say 'I'm going to try this', that is a comment that relates to a trial. "
+        "Below is a list of comments from influencer posts. Your task is to filter and return only those comments that indicate user engagement with our app. Engagement is defined as any explicit or implicit mention of app-related activities—such as app usage, installation, download, trial, a question about the application, or an expressed intent to try the app—even if the reference is ambiguous. If unsure, err on the side of inclusion "
+        "For example, comments like 'I'm going to try this' should be included since they imply a trial or interest in the app. Both positive and negative sentiments are acceptable as long as they relate to the app. "
         "IMPORTANT: Respond ONLY with raw JSON without any markdown formatting or code block markers. "
         "The output should be a JSON array of strings (each string should be one comment).\n\n"
         "Comments:\n" + json.dumps(comments, indent=2)
@@ -212,6 +211,9 @@ if __name__ == "__main__":
                 "I love you!",
                 "I am going to try this",
                 "Is it on the IOS store?",
-                "My friend uses this app too!"]
+                "My friend uses this app too!",
+                "That is really cool",
+                "It is a little too expensive. I will wait to see if they lower the subscription for the app.",
+                "I just tried it and it is great"]
     
     print(get_comments_about_app(comments))

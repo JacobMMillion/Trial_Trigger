@@ -5,6 +5,7 @@ import psycopg2
 from datetime import datetime, timezone
 import json
 from openai import OpenAI
+import tiktoken
 
 """
 get_comments returns a json object where "text" is the list of comments
@@ -38,7 +39,7 @@ def get_comments(url):
       url (str): The URL of the Instagram or TikTok post.
     
     Returns:
-      A json object where "text" is a list of comments scraped from the post.
+      A list of comments
     """
     # Determine which actor and input to use based on the URL
     if "instagram.com" in url:
@@ -69,7 +70,11 @@ def get_comments(url):
         
         # Fetch the dataset items using Apify API v2 endpoint.
         dataset_response = APIFY_CLIENT.dataset(dataset_id).list_items()
-        comments = dataset_response.items
+        data = dataset_response.items
+
+        comments = []
+        for item in data:
+            comments.append(item["text"])
         
         return comments
 
@@ -125,6 +130,45 @@ def log_comments(url, comments):
         return False
     
 
+
+def count_tokens(text):
+    # Setup tiktoken encoding for GPT-4 (using the "cl100k_base" encoding)
+    encoding = tiktoken.get_encoding("cl100k_base")
+    """Returns the number of tokens in the provided text."""
+    return len(encoding.encode(text))
+
+
+def split_into_batches(comments, max_tokens_per_batch=30000, prompt_overhead=200):
+    """
+    Splits a list of comment strings into batches where each batch's token count,
+    including a fixed prompt overhead, stays below max_tokens_per_batch.
+    
+    Parameters:
+        comments (list): A list of comment strings.
+        max_tokens_per_batch (int): Maximum token count per batch (default set to 30,000).
+        prompt_overhead (int): Fixed token count for the static prompt text.
+        
+    Returns:
+        list: A list of batches (each batch is a list of comments).
+    """
+    batches = []
+    current_batch = []
+    current_tokens = prompt_overhead  # Account for the tokens in the prompt
+    for comment in comments:
+        tokens_in_comment = count_tokens(comment)
+        # If adding this comment exceeds the max token count, start a new batch.
+        if current_tokens + tokens_in_comment > max_tokens_per_batch:
+            batches.append(current_batch)
+            current_batch = [comment]
+            current_tokens = prompt_overhead + tokens_in_comment
+        else:
+            current_batch.append(comment)
+            current_tokens += tokens_in_comment
+    if current_batch:
+        batches.append(current_batch)
+    return batches
+
+
 """
 Uses ChatGPT API to filter the comments to only those that may relate to the app, trial, or download
 """
@@ -132,51 +176,56 @@ def get_comments_about_app(comments):
     """
     Uses the new OpenAI SDK to filter a list of comment strings,
     returning only those comments that mention or relate to an app,
-    a trial, or a download.
+    a trial, or a download. This function splits the input comments
+    into batches to stay within token limits before calling the API.
 
     Parameters:
-        comments (list): A list of comment strings.
+        comments (list): A list of comment strings
         
     Returns:
         list: Filtered comments as a list of strings.
     """
     # Instantiate the client using your API key from environment variables.
-    client = OpenAI(
-        api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     
-    # Construct a prompt that instructs ChatGPT to filter the comments.
-    prompt = (
-        "Below is a list of comments from influencer posts. Your task is to filter and return only those comments that indicate user engagement with our app. Engagement is defined as any explicit or implicit mention of app-related activities—such as app usage, installation, download, trial, a question about the application, or an expressed intent to try the app—even if the reference is ambiguous. If unsure, err on the side of inclusion "
-        "For example, comments like 'I'm going to try this' should be included since they imply a trial or interest in the app. Both positive and negative sentiments are acceptable as long as they relate to the app. "
-        "IMPORTANT: Respond ONLY with raw JSON without any markdown formatting or code block markers. "
-        "The output should be a JSON array of strings (each string should be one comment).\n\n"
-        "Comments:\n" + json.dumps(comments, indent=2)
-    )
+    # Split comments into batches based on token limits.
+    batches = split_into_batches(comments, max_tokens_per_batch=30000, prompt_overhead=200)
+    all_filtered_comments = []
     
-    # Call the ChatCompletion endpoint with the new interface.
-    chat_completion = client.chat.completions.create(
-        model="gpt-4o",  # Use your desired model name.
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.2,
-        max_tokens=500,
-    )
+    for batch in batches:
+        prompt = (
+            "Below is a list of comments from influencer posts. Your task is to filter and return only those comments that indicate user engagement with our app. "
+            "Both positive and negative sentiments are acceptable as long as they relate to the app directly or indirectly (Astra, Haven, Saga, Berry). "
+            "IMPORTANT: Respond ONLY with raw JSON without any markdown formatting or code block markers. "
+            "The output should be a JSON array of strings (each string should be one comment).\n\n"
+            "Comments:\n" + json.dumps(batch, indent=2)
+        )
+        
+        # Call the ChatCompletion endpoint.
+        chat_completion = client.chat.completions.create(
+            model="gpt-4o",  # Use your desired model name.
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=500,
+        )
+        
+        # Extract the text from the response.
+        result_text = chat_completion.choices[0].message.content.strip()
+        try:
+            # Parse the response text as JSON to get the list of filtered comments.
+            filtered_batch = json.loads(result_text)
+            if isinstance(filtered_batch, list):
+                all_filtered_comments.extend(filtered_batch)
+            else:
+                print("Unexpected JSON format, expected a list but got:", type(filtered_batch))
+        except Exception as e:
+            print("Error parsing JSON response:", e)
+            print("Raw response:", result_text)
     
-    # Extract the text from the response.
-    result_text = chat_completion.choices[0].message.content.strip()
-    
-    try:
-        # Parse the response text as JSON to get the list of filtered comments.
-        filtered_comments = json.loads(result_text)
-    except Exception as e:
-        print("Error parsing JSON response:", e)
-        print("Raw response:", result_text)
-        filtered_comments = []
-    
-    return filtered_comments
+    return all_filtered_comments
 
 
 
@@ -192,28 +241,15 @@ if __name__ == "__main__":
     # # post_url = "https://www.instagram.com/reel/DDSO9TCvA75/"
 
     # # Fetch comments from the post
-    # comments_data = get_comments(post_url)
-    # comment_texts = [comment["text"] for comment in comments_data]
+    # comments = get_comments(post_url)
 
     # # Filter comments to those that only relate to the app
-    # filtered_texts = get_comments_about_app(comment_texts)
+    # filtered_comments = get_comments_about_app(comments)
 
     # # Log the comments to the database
-    # log_comments(post_url, filtered_texts)
+    # log_comments(post_url, filtered_comments)
 
-    # EXAMPLE
-
-    comments = ["I got the app!", 
-                "Nice post", 
-                "I just got this!", 
-                "This thing is really cool", 
-                "Thanks for making such great videos!", 
-                "I love you!",
-                "I am going to try this",
-                "Is it on the IOS store?",
-                "My friend uses this app too!",
-                "That is really cool",
-                "It is a little too expensive. I will wait to see if they lower the subscription for the app.",
-                "I just tried it and it is great"]
-    
-    print(get_comments_about_app(comments))
+    # # Print
+    # for comment in filtered_comments:
+    #     print(comment)
+    pass

@@ -235,7 +235,9 @@ def trigger_view_scraper(app_name, event_id):
 
         # Get the app comments
         comments = get_comments(post_url)
+        print("Comments: ", comments)
         app_comments = get_comments_about_app(comments)
+        print("App Comments: ", app_comments)
         print("Got comments, and filtered to those about the app.")
 
         print(f"  Updated Metrics -> Views: {new_view_count}, Comments: {new_comment_count}, Likes: {new_likes}")

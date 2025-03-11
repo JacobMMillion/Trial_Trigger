@@ -196,7 +196,8 @@ def trigger_view_scraper(app_name, event_id):
             caption,
             create_time,
             log_time,
-            num_likes
+            num_likes,
+            share_count
         FROM DailyVideoData
         WHERE create_time >= %s AND app = %s
         ORDER BY post_url, log_time DESC;
@@ -216,9 +217,9 @@ def trigger_view_scraper(app_name, event_id):
     for row in rows:
         # Unpack all columns (id, post_url, creator_username, marketing_associate,
         # app, view_count, comment_count, caption, create_time, log_time, num_likes)
-        _, post_url, creator_username, marketing_associate, _, old_view_count, old_comment_count, caption, create_time, log_time, old_num_likes = row
+        _, post_url, creator_username, marketing_associate, _, old_view_count, old_comment_count, caption, create_time, log_time, old_num_likes, old_num_shares = row
         print(f"Processing URL: {post_url}")
-        print(f"  Previous Metrics -> Views: {old_view_count}, Comments: {old_comment_count}, Likes: {old_num_likes}")
+        print(f"  Previous Metrics -> Views: {old_view_count}, Comments: {old_comment_count}, Likes: {old_num_likes}, Shares: {old_num_shares}")
 
         # Get new metrics from Apify.
         result = hit_apify(post_url)
@@ -226,12 +227,13 @@ def trigger_view_scraper(app_name, event_id):
             print(f"  Skipping URL {post_url} due to API failure.")
             continue
 
-        username, new_view_count, new_comment_count, new_likes = result
+        username, new_view_count, new_comment_count, new_likes, new_shares = result
 
         # Compute deltas.
         delta_views = new_view_count - old_view_count if new_view_count is not None else None
         delta_comments = new_comment_count - old_comment_count if new_comment_count is not None else None
         delta_likes = new_likes - old_num_likes if new_likes is not None else None
+        delta_shares = new_shares - old_num_shares if new_shares is not None else None
 
         # Get the app comments
         comments = get_comments(post_url)
@@ -240,8 +242,8 @@ def trigger_view_scraper(app_name, event_id):
         print("App Comments: ", app_comments)
         print("Got comments, and filtered to those about the app.")
 
-        print(f"  Updated Metrics -> Views: {new_view_count}, Comments: {new_comment_count}, Likes: {new_likes}")
-        print(f"  Deltas          -> ΔViews: {delta_views}, ΔComments: {delta_comments}, ΔLikes: {delta_likes}\n")
+        print(f"  Updated Metrics -> Views: {new_view_count}, Comments: {new_comment_count}, Likes: {new_likes}, Shares: {new_shares}")
+        print(f"  Deltas          -> ΔViews: {delta_views}, ΔComments: {delta_comments}, ΔLikes: {delta_likes}, ΔShares: {delta_shares}\n")
 
         # Log these values in VideoMetricDeltas.
         try:
@@ -262,8 +264,11 @@ def trigger_view_scraper(app_name, event_id):
                     old_likes,
                     new_likes,
                     delta_likes,
-                    app_comments
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    app_comments,
+                    old_shares,
+                    new_shares,
+                    delta_shares
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
             """
             cursor.execute(insert_query, (
                 event_id,
@@ -279,7 +284,10 @@ def trigger_view_scraper(app_name, event_id):
                 old_num_likes,
                 new_likes,
                 delta_likes,
-                app_comments
+                app_comments,
+                old_num_shares,
+                new_shares,
+                delta_shares
             ))
             conn.commit()
             cursor.close()
@@ -364,15 +372,20 @@ def hit_apify(url):
             elif url_type == "instagram":
                 likes_count = item.get("likesCount", 0)
 
-            # Extract the username based on platform
+            # Extract the username and share count based on platform
+            # For insagram, we keep share_count as 0
+            share_count = 0
             if url_type == "tiktok":
                 author_meta = item.get("authorMeta", {})
                 username = author_meta.get("name", None)
+
+                # only tiktok allows us to get the share count, we obtain it here
+                share_count = item.get("shareCount", 0)
             elif url_type == "instagram":
                 username = item.get("ownerUsername", None)
 
 
-            return username, view_count, comment_count, likes_count
+            return username, view_count, comment_count, likes_count, share_count
         
         else:
             return None

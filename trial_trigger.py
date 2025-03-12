@@ -18,9 +18,9 @@ APIFY_CLIENT = ApifyClient(APIFY_API_KEY)
 
 def trial_trigger(app_name):
     """
-    Check the last 10 days of trial counts (grouped by date) from the NewTrials table
+    Check the last 2 weeks of trial counts (grouped by date) from the NewTrials table
     for the specified app. Calculate the average delta between consecutive days.
-    If the increase (i.e. current delta) between the last two days exceeds twice the average delta,
+    If the increase (i.e. current delta) between the last two days exceeds the average delta (positively),
     trigger the view scraper.
 
     Logged in UTC. This is important as we use it as a check to see if there has been a log for
@@ -28,9 +28,9 @@ def trial_trigger(app_name):
 
     Returns True if the trigger is fired; otherwise, False.
     """
-    # Determine our date range (last 10 days, including today)
+    # Determine our date range (last 2 weeks, including today)
     now = datetime.now(timezone.utc).date()  # current UTC date
-    start_date = now - timedelta(days=9)    # 10 days total
+    start_date = now - timedelta(days=13)    # 14 days total
 
     # Connect to the database.
     conn = psycopg2.connect(CONN_STR)
@@ -51,9 +51,9 @@ def trial_trigger(app_name):
     cursor.execute(query, (app_name, start_date, upper_bound))
     rows = cursor.fetchall()
 
-    # Build a dictionary with one entry per day over the 10-day period, initializing counts to 0.
+    # Build a dictionary with one entry per day over the 14-day period, initializing counts to 0.
     daily_counts = {}
-    for i in range(10):
+    for i in range(14):
         day = start_date + timedelta(days=i)
         daily_counts[day] = 0
 
@@ -166,7 +166,7 @@ def trial_trigger(app_name):
 def trigger_view_scraper(app_name, event_id):
     """
     Iterate over the DailyVideoData table and aggregate all video records
-    (using the post_url column) from the past two weeks for the given app.
+    (using the post_url column) from the past 10 days for the given app.
     For each post_url, select only the most recent log (based on log_time)
     along with additional columns (view_count, comment_count, caption,
     create_time, log_time, num_likes). Then print the results sorted by
@@ -177,13 +177,13 @@ def trigger_view_scraper(app_name, event_id):
     app_name = app_name.capitalize()
 
     # Calculate threshold: two weeks ago (using UTC)
-    threshold_date = datetime.now(timezone.utc) - timedelta(days=14)
+    threshold_date = datetime.now(timezone.utc) - timedelta(days=10)
 
     # Connect to the database
     conn = psycopg2.connect(CONN_STR)
     cursor = conn.cursor()
 
-    # Use DISTINCT ON to get, for each post_url posted in last 2 weeks, the row with the latest log_time.
+    # Use DISTINCT ON to get, for each post_url posted in last 10 days, the row with the latest log_time.
     query = """
         SELECT DISTINCT ON (post_url)
             id,
@@ -213,7 +213,7 @@ def trigger_view_scraper(app_name, event_id):
     cursor.close()
     conn.close()
 
-    print("Processing videos from the past 2 weeks:")
+    print("Processing videos from the past 10 days:")
     for row in rows:
         # Unpack all columns (id, post_url, creator_username, marketing_associate,
         # app, view_count, comment_count, caption, create_time, log_time, num_likes)
@@ -309,7 +309,7 @@ def hit_apify(url):
         url_type = "instagram"
     else:
         print(f"URL '{url}' does not match TikTok or Instagram. Skipping.")
-        return 0    
+        return None
 
     try:
         # Prepare the Actor input based on URL type

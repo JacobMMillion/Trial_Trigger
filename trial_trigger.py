@@ -18,7 +18,7 @@ APIFY_CLIENT = ApifyClient(APIFY_API_KEY)
 
 def trial_trigger(app_name):
     """
-    Check the last 14 days of trial counts (grouped by date) from the NewTrials table
+    Check the last 10 days of trial counts (grouped by date) from the NewTrials table
     for the specified app. Calculate the average delta between consecutive days.
     If the increase (i.e. current delta) between the last two days exceeds twice the average delta,
     trigger the view scraper.
@@ -28,9 +28,9 @@ def trial_trigger(app_name):
 
     Returns True if the trigger is fired; otherwise, False.
     """
-    # Determine our date range (last 14 days, including today)
+    # Determine our date range (last 10 days, including today)
     now = datetime.now(timezone.utc).date()  # current UTC date
-    start_date = now - timedelta(days=13)    # 14 days total
+    start_date = now - timedelta(days=9)    # 10 days total
 
     # Connect to the database.
     conn = psycopg2.connect(CONN_STR)
@@ -51,9 +51,9 @@ def trial_trigger(app_name):
     cursor.execute(query, (app_name, start_date, upper_bound))
     rows = cursor.fetchall()
 
-    # Build a dictionary with one entry per day over the 14-day period, initializing counts to 0.
+    # Build a dictionary with one entry per day over the 10-day period, initializing counts to 0.
     daily_counts = {}
-    for i in range(14):
+    for i in range(10):
         day = start_date + timedelta(days=i)
         daily_counts[day] = 0
 

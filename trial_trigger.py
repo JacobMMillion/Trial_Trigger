@@ -8,6 +8,8 @@ from apify_client import ApifyClient
 from get_comments import get_comments
 from get_comments import get_comments_about_app
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 # Load environment variables and set connection string.
 load_dotenv()
 CONN_STR = os.getenv('DATABASE_URL')
@@ -162,7 +164,6 @@ def trial_trigger(app_name):
     
 
 
-
 def trigger_view_scraper(app_name, event_id):
     """
     Iterate over the DailyVideoData table and aggregate all video records
@@ -170,13 +171,13 @@ def trigger_view_scraper(app_name, event_id):
     For each post_url, select only the most recent log (based on log_time)
     along with additional columns (view_count, comment_count, caption,
     create_time, log_time, num_likes). Then print the results sorted by
-    log_time descending.
+    create_time descending.
     """
 
     # capitalize first letter
     app_name = app_name.capitalize()
 
-    # Calculate threshold: two weeks ago (using UTC)
+    # Calculate threshold: 10 days ago (using UTC)
     threshold_date = datetime.now(timezone.utc) - timedelta(days=10)
 
     # Connect to the database
@@ -214,64 +215,61 @@ def trigger_view_scraper(app_name, event_id):
     conn.close()
 
     print("Processing videos from the past 10 days:")
-    for row in rows:
-        # Unpack all columns (id, post_url, creator_username, marketing_associate,
-        # app, view_count, comment_count, caption, create_time, log_time, num_likes)
-        _, post_url, creator_username, marketing_associate, _, old_view_count, old_comment_count, caption, create_time, log_time, old_num_likes, old_num_shares = row
-        print(f"Processing URL: {post_url}")
-        print(f"  Previous Metrics -> Views: {old_view_count}, Comments: {old_comment_count}, Likes: {old_num_likes}, Shares: {old_num_shares}")
 
-        # Get new metrics from Apify.
-        result = hit_apify(post_url)
-        if result is None:
-            print(f"  Skipping URL {post_url} due to API failure.")
-            continue
+    # Process each row concurrently.
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        future_to_row = {executor.submit(process_video_row, row, event_id): row for row in rows}
+        for future in as_completed(future_to_row):
+            row = future_to_row[future]
+            try:
+                result = future.result()
+                print(f"Finished processing: {result}")
+            except Exception as e:
+                print(f"Error processing URL {row[1]}: {e}")
 
-        username, new_view_count, new_comment_count, new_likes, new_shares = result
+    
+def process_video_row(row, event_id):
+    """
+    Process a single video row: fetch new metrics via Apify,
+    calculate deltas, retrieve comments, and update the VideoMetricDeltas table.
+    """
+    # Unpack all columns (id, post_url, creator_username, marketing_associate,
+    # app, view_count, comment_count, caption, create_time, log_time, num_likes, share_count)
+    _, post_url, creator_username, marketing_associate, _, old_view_count, old_comment_count, caption, create_time, log_time, old_num_likes, old_num_shares = row
+    print(f"Processing URL: {post_url}")
+    print(f"  Previous Metrics -> Views: {old_view_count}, Comments: {old_comment_count}, Likes: {old_num_likes}, Shares: {old_num_shares}")
 
-        # Compute deltas.
-        delta_views = new_view_count - old_view_count if new_view_count is not None else None
-        delta_comments = new_comment_count - old_comment_count if new_comment_count is not None else None
-        delta_likes = new_likes - old_num_likes if new_likes is not None else None
-        delta_shares = new_shares - old_num_shares if new_shares is not None else None
+    # Get new metrics from Apify.
+    result = hit_apify(post_url)
+    if result is None:
+        print(f"  Skipping URL {post_url} due to API failure.")
+        return f"Skipped {post_url}"
 
-        # Get the app comments
-        comments = get_comments(post_url)
-        print("Comments: ", comments)
-        app_comments = get_comments_about_app(comments)
-        print("App Comments: ", app_comments)
-        print("Got comments, and filtered to those about the app.")
+    username, new_view_count, new_comment_count, new_likes, new_shares = result
 
-        print(f"  Updated Metrics -> Views: {new_view_count}, Comments: {new_comment_count}, Likes: {new_likes}, Shares: {new_shares}")
-        print(f"  Deltas          -> ΔViews: {delta_views}, ΔComments: {delta_comments}, ΔLikes: {delta_likes}, ΔShares: {delta_shares}\n")
+    # Compute deltas.
+    delta_views = new_view_count - old_view_count if new_view_count is not None else None
+    delta_comments = new_comment_count - old_comment_count if new_comment_count is not None else None
+    delta_likes = new_likes - old_num_likes if new_likes is not None else None
+    delta_shares = new_shares - old_num_shares if new_shares is not None else None
 
-        # Log these values in VideoMetricDeltas.
-        try:
-            conn = psycopg2.connect(CONN_STR)
-            cursor = conn.cursor()
-            insert_query = """
-                INSERT INTO VideoMetricDeltas (
-                    trial_trigger_event_id,
-                    post_url,
-                    creator_username,
-                    marketing_associate,
-                    old_view_count,
-                    new_view_count,
-                    delta_views,
-                    old_comment_count,
-                    new_comment_count,
-                    delta_comments,
-                    old_likes,
-                    new_likes,
-                    delta_likes,
-                    app_comments,
-                    old_shares,
-                    new_shares,
-                    delta_shares
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """
-            cursor.execute(insert_query, (
-                event_id,
+    # Get the app comments.
+    comments = get_comments(post_url)
+    print("Comments:", comments)
+    app_comments = get_comments_about_app(comments)
+    print("App Comments:", app_comments)
+    print("Got comments, and filtered to those about the app.")
+
+    print(f"  Updated Metrics -> Views: {new_view_count}, Comments: {new_comment_count}, Likes: {new_likes}, Shares: {new_shares}")
+    print(f"  Deltas          -> ΔViews: {delta_views}, ΔComments: {delta_comments}, ΔLikes: {delta_likes}, ΔShares: {delta_shares}\n")
+
+    # Log these values in VideoMetricDeltas.
+    try:
+        conn = psycopg2.connect(CONN_STR)
+        cursor = conn.cursor()
+        insert_query = """
+            INSERT INTO VideoMetricDeltas (
+                trial_trigger_event_id,
                 post_url,
                 creator_username,
                 marketing_associate,
@@ -281,20 +279,42 @@ def trigger_view_scraper(app_name, event_id):
                 old_comment_count,
                 new_comment_count,
                 delta_comments,
-                old_num_likes,
+                old_likes,
                 new_likes,
                 delta_likes,
                 app_comments,
-                old_num_shares,
+                old_shares,
                 new_shares,
                 delta_shares
-            ))
-            conn.commit()
-            cursor.close()
-            conn.close()
-            print(f"  Logged metrics delta for URL: {post_url}\n")
-        except Exception as e:
-            print(f"  Error logging metrics for URL {post_url}: {str(e)}\n")
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+        cursor.execute(insert_query, (
+            event_id,
+            post_url,
+            creator_username,
+            marketing_associate,
+            old_view_count,
+            new_view_count,
+            delta_views,
+            old_comment_count,
+            new_comment_count,
+            delta_comments,
+            old_num_likes,
+            new_likes,
+            delta_likes,
+            app_comments,
+            old_num_shares,
+            new_shares,
+            delta_shares
+        ))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print(f"  Logged metrics delta for URL: {post_url}\n")
+        return f"Processed {post_url}"
+    except Exception as e:
+        print(f"  Error logging metrics for URL {post_url}: {str(e)}\n")
+        return f"Error processing {post_url}"
 
 
 

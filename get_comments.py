@@ -189,14 +189,17 @@ def get_comments_about_app(comments):
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     
     # Split comments into batches based on token limits.
-    batches = split_into_batches(comments, max_tokens_per_batch=30000, prompt_overhead=200)
+    batches = split_into_batches(comments, max_tokens_per_batch=30000, prompt_overhead=300)
     all_filtered_comments = []
     
     for batch in batches:
         prompt = (
-            "Below is a list of comments from influencer posts. Your task is to filter and return only those comments that indicate user engagement with our app. "
-            "Both positive and negative sentiments are acceptable as long as they relate to the app directly or indirectly (Astra, Haven, Saga, Berry). "
-            "IMPORTANT: Respond ONLY with raw JSON without any markdown formatting or code block markers. "
+            "Below is a list of comments from influencer posts promoting our apps: Astra (an astrology app), Haven (a bible app), "
+            "Saga (a generative writing app), and Berry (a women's health app). Your task is to filter and return only those comments that "
+            "demonstrate a user action or intent related to engaging with one of our apps. This includes comments suggesting that the user "
+            "downloaded, installed, signed up for a trial, expressed direct interest, or mentioned a specific action prompted by the app or its features. "
+            "Do not include comments that only mention general topics (e.g., astrology, biblical themes, writing, or women's health) unless they also "
+            "reference a direct engagement with the app. "
             "The output should be a JSON array of strings (each string should be one comment).\n\n"
             "Comments:\n" + json.dumps(batch, indent=2)
         )

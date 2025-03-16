@@ -196,11 +196,11 @@ def get_comments_about_app(comments):
         prompt = (
             "Below is a list of comments from influencer posts promoting our apps: Astra (an astrology app), Haven (a bible app), "
             "Saga (a generative writing app), and Berry (a women's health app). Your task is to filter and return only those comments that "
-            "demonstrate a user action or intent related to engaging with one of our apps. This includes comments suggesting that the user "
+            "demonstrate a user action or intent related to engaging with one of our apps. Even a mention of the app is sufficient. This includes comments suggesting that the user "
             "downloaded, installed, signed up for a trial, expressed direct interest, or mentioned a specific action prompted by the app or its features. "
             "Do not include comments that only mention general topics (e.g., astrology, biblical themes, writing, or women's health) unless they also "
-            "reference a direct engagement with the app. "
-            "The output should be a JSON array of strings (each string should be one comment).\n\n"
+            "reference a direct engagement with the app. Err on the side of inclusion when in doubt. "
+            "IMPORTANT: The output should be a JSON array of strings (each string should be one comment). Nothing more, including markdown. \n\n"
             "Comments:\n" + json.dumps(batch, indent=2)
         )
         
@@ -244,13 +244,13 @@ if __name__ == "__main__":
     # # post_url = "https://www.instagram.com/reel/DDSO9TCvA75/"
 
     # # Fetch comments from the post
-    # comments = get_comments(post_url)
+    # comments = ["Astra is a cool app!", "This should not be picked up", "I tried this app and liked it!", "It is not free, only a 7 day trial", "Astrology is cool", "Your account is a haven of safety for me"]
 
     # # Filter comments to those that only relate to the app
     # filtered_comments = get_comments_about_app(comments)
 
-    # # Log the comments to the database
-    # log_comments(post_url, filtered_comments)
+    # # # Log the comments to the database
+    # # log_comments(post_url, filtered_comments)
 
     # # Print
     # for comment in filtered_comments:

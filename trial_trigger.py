@@ -82,7 +82,7 @@ def trial_trigger(app_name):
     # make negative if decreasing
     curr_delta = counts[-1] - counts[-2]
 
-    threshold = average_delta  # Trigger if the increase is greater than threshold
+    threshold = average_delta / 2  # Trigger if the increase is greater than threshold
 
     # # TESTING
     # threshold = -99999

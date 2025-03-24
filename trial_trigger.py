@@ -426,3 +426,7 @@ if __name__ == "__main__":
             print(app, ": Threshold exceeded, running scraper")
         else:
             print(app, ": Threshold NOT exceeded, NOT running scraper")
+
+    # # If need to add something retroactively, can do so like this:
+    # row = 0, "https://www.tiktok.com/@emymoore3/video/7485054202415451438?lang=en", "emymoore3", "Dylano", "Haven", 131000, 120, None, None, None, 29800, 506
+    # process_video_row(row, 529)

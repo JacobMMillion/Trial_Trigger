@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 import re
 from apify_client import ApifyClient
+import smtplib
 
 from get_comments import get_comments
 from get_comments import get_comments_about_app
@@ -20,19 +21,17 @@ APIFY_CLIENT = ApifyClient(APIFY_API_KEY)
 
 def trial_trigger(app_name):
     """
-    Check the last 2 weeks of trial counts (grouped by date) from the NewTrials table
-    for the specified app. Calculate the average delta between consecutive days.
-    If the increase (i.e. current delta) between the last two days exceeds the average delta (positively),
-    trigger the view scraper.
+    Check the 30 days of trial counts (grouped by date) from the NewTrials table
+    for the specified app.
 
     Logged in UTC. This is important as we use it as a check to see if there has been a log for
     the day already.
 
     Returns True if the trigger is fired; otherwise, False.
     """
-    # Determine our date range (last 2 weeks, including today)
+    # Determine our date range (last 30 days, including today)
     now = datetime.now(timezone.utc).date()  # current UTC date
-    start_date = now - timedelta(days=13)    # 14 days total
+    start_date = now - timedelta(days=29)    # 30 days total
 
     # Connect to the database.
     conn = psycopg2.connect(CONN_STR)
@@ -53,9 +52,9 @@ def trial_trigger(app_name):
     cursor.execute(query, (app_name, start_date, upper_bound))
     rows = cursor.fetchall()
 
-    # Build a dictionary with one entry per day over the 14-day period, initializing counts to 0.
+    # Build a dictionary with one entry per day over the 30-day period, initializing counts to 0.
     daily_counts = {}
-    for i in range(14):
+    for i in range(30):
         day = start_date + timedelta(days=i)
         daily_counts[day] = 0
 
@@ -71,58 +70,66 @@ def trial_trigger(app_name):
     sorted_dates = sorted(daily_counts.keys())
     counts = [daily_counts[dt] for dt in sorted_dates]
 
-    if len(counts) < 2:
-        print("Not enough data to compute deltas.")
+    if not counts:
+        print("No data available to compute the median.")
         return False
 
-    # Compute the absolute differences between each consecutive day.
-    deltas = [abs(counts[i] - counts[i-1]) for i in range(1, len(counts))]
-    average_delta = sum(deltas) / len(deltas) if deltas else 0
+    # Compute the historical median trial value using all days except the current day.
+    historical_counts = counts[:-1]  # exclude the latest day (today)
+    sorted_hist_counts = sorted(historical_counts)
+    n = len(sorted_hist_counts)
+    if n % 2 == 1:
+        median_value = sorted_hist_counts[n // 2]
+    else:
+        median_value = (sorted_hist_counts[n // 2 - 1] + sorted_hist_counts[n // 2]) / 2
 
-    # make negative if decreasing
-    curr_delta = counts[-1] - counts[-2]
-
-    threshold = average_delta / 2  # Trigger if the increase is greater than threshold
-
-    # # TESTING
-    # threshold = -99999
+    # Today's trial count is the last value.
+    current_trial_value = counts[-1]
 
     # Detailed logging for debugging.
     print(f"Date range: {sorted_dates[0]} to {sorted_dates[-1]}")
     print("Daily counts:")
     for dt, count in zip(sorted_dates, counts):
         print(f"  {dt.isoformat()}: {count}")
-    print("Deltas between consecutive days:")
-    for i in range(1, len(sorted_dates)):
-        print(f"  Delta from {sorted_dates[i-1].isoformat()} to {sorted_dates[i].isoformat()}: {deltas[i-1]}")
-    
-    print(f"Average delta: {average_delta:.2f}")
-    print(f"Current delta (last two days): {curr_delta}")
-    print(f"Threshold: {threshold:.2f}")
+
+    print(f"Historical median trial value (excluding current day): {median_value}")
+    print(f"Current trial value: {current_trial_value}")
+
+    THRESHOLD = median_value
 
     # Trigger if exceeds threshold.
-    if (curr_delta) > threshold:
+    if current_trial_value > THRESHOLD:
 
-        # Check if a trigger event has already been logged today.
+        # Check the most recent trigger event for this app.
         try:
             conn = psycopg2.connect(CONN_STR)
             cursor = conn.cursor()
             check_query = """
-                SELECT COUNT(*) FROM TrialTriggerEvents
-                WHERE app = %s AND event_time::date = %s;
+                SELECT trial_count, event_time
+                FROM TrialTriggerEvents
+                WHERE app = %s AND event_time::date = %s
+                ORDER BY event_time DESC
+                LIMIT 1;
             """
             cursor.execute(check_query, (app_name, now))
-            count_already_triggered = cursor.fetchone()[0]
+            result = cursor.fetchone()
             cursor.close()
             conn.close()
-            if count_already_triggered > 0:
-                print("Trigger already fired for today. Skipping new trigger.")
-                return False
         except Exception as e:
             print(f"Error checking trial trigger events: {str(e)}")
             return False
 
-        # Insert a row into TrialTriggerEvents.
+        # If there is a previous event for the current day, only trigger if the current trial count has increased sufficiently.
+        if result:
+            last_trial_value, last_event_time = result
+            # Define a minimum required increase. For example, using the median value as the margin:
+            MIN_INCREASE_THRESHOLD = median_value / 4
+            THRESHOLD = MIN_INCREASE_THRESHOLD # update the threshold for when it is logged if it gets logged
+            if current_trial_value - last_trial_value < MIN_INCREASE_THRESHOLD:
+                print("Increase since the last trigger event is not sufficient. Skipping trigger.")
+                return False
+
+        # Proceed to log the event since no recent trigger or the increase is sufficient.
         try:
             conn = psycopg2.connect(CONN_STR)
             cursor = conn.cursor()
@@ -141,9 +148,9 @@ def trial_trigger(app_name):
             cursor.execute(insert_event, (
                 event_time,
                 counts[-1],  # current trial count (latest day)
-                average_delta,
-                curr_delta,
-                threshold,
+                None,
+                None,
+                THRESHOLD,
                 app_name
             ))
             event_id = cursor.fetchone()[0]
@@ -416,16 +423,49 @@ def hit_apify(url):
 
 
 
+def send_notification_email(app):
+    # Load environment variables
+    FROM_EMAIL = os.getenv("FROM_EMAIL")
+    PASSWORD = os.getenv("APP_EMAIL_PW")
+    TO_EMAIL = os.getenv("TO_EMAIL")
+    
+    # Define email subject and message body.
+    subject = f"Trigger Event for {app}"
+    message = ("This app has had a number of new trials that exceeds the median for the past month. Check it out at the site: "
+               "https://website-5g58.onrender.com/trial_upticks")
+    
+    # Create the email content
+    email_content = f"Subject: {subject}\n\n{message}"
+    auth = (FROM_EMAIL, PASSWORD)
+    
+    try:
+        print(f"Sending email to {TO_EMAIL}...")
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(auth[0], auth[1])
+        server.sendmail(auth[0], TO_EMAIL, email_content)
+        server.quit()
+        print("Email sent successfully!")
+    except smtplib.SMTPAuthenticationError:
+        print("Failed to authenticate. Check your email/password.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+
+
 # MAIN, run for each app
 if __name__ == "__main__":
     # Define your app names properly
     APP_NAMES = ["saga", "berry", "haven", "astra"]
 
     for app in APP_NAMES:
+        print("--------------------------")
+        print("Looking at metrics for: ", app)
         if trial_trigger(app):
             print(app, ": Threshold exceeded, running scraper")
         else:
             print(app, ": Threshold NOT exceeded, NOT running scraper")
+        print("--------------------------")
 
     # # If need to add something retroactively, can do so like this:
     # row = 0, "https://www.tiktok.com/@emymoore3/video/7485054202415451438?lang=en", "emymoore3", "Dylano", "Haven", 131000, 120, None, None, None, 29800, 506

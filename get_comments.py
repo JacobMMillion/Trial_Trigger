@@ -46,13 +46,13 @@ def get_comments(url):
         actor_id = "apify/instagram-comment-scraper"
         run_input = {
             "directUrls": [url],
-            "resultsLimit": 100,  # Number of comments to retrieve
+            "resultsLimit": 50,  # Number of comments to retrieve
         }
     elif "tiktok.com" in url:
         actor_id = "clockworks/tiktok-comments-scraper"
         run_input = {
             "postURLs": [url],
-            "commentsPerPost": 100,       # Number of comments to retrieve
+            "commentsPerPost": 50,       # Number of comments to retrieve
             "maxRepliesPerComment": 2     # Maximum number of replies per comment
         }
     else:

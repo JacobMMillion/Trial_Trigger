@@ -164,6 +164,7 @@ def trial_trigger(app_name):
 
         # Call view scraper and pass the event ID.
         trigger_view_scraper(app_name, event_id)
+        send_notification_email(app_name.capitalize())
         return True
     else:
         print("No significant upward change detected; no trigger required.")
@@ -427,23 +428,27 @@ def send_notification_email(app):
     # Load environment variables
     FROM_EMAIL = os.getenv("FROM_EMAIL")
     PASSWORD = os.getenv("APP_EMAIL_PW")
-    TO_EMAIL = os.getenv("TO_EMAIL")
+    # Assume TO_EMAIL is a comma-separated string of email addresses
+    TO_EMAILS = [email.strip() for email in os.getenv("TO_EMAIL").split(',') if email.strip()]
     
     # Define email subject and message body.
-    subject = f"Trigger Event for {app}"
-    message = ("This app has had a number of new trials that exceeds the median for the past month. Check it out at the site: "
-               "https://website-5g58.onrender.com/trial_upticks")
+    timestamp = datetime.now().strftime("%b %d, %Y %I:%M %p")
+    subject = f"Trigger Event for {app} - {timestamp}"
+    message = ("This app has had a number of new trials that exceeds the median for the past month.\n\n"
+               "Check it out at the site:\n"
+               "https://website-5g58.onrender.com/trial_upticks\n\n"
+               "-Jacob Automated Message")
     
     # Create the email content
     email_content = f"Subject: {subject}\n\n{message}"
-    auth = (FROM_EMAIL, PASSWORD)
     
     try:
-        print(f"Sending email to {TO_EMAIL}...")
+        print(f"Sending email to {TO_EMAILS}...")
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
-        server.login(auth[0], auth[1])
-        server.sendmail(auth[0], TO_EMAIL, email_content)
+        server.login(FROM_EMAIL, PASSWORD)
+        # server.sendmail accepts a list for the recipient field
+        server.sendmail(FROM_EMAIL, TO_EMAILS, email_content)
         server.quit()
         print("Email sent successfully!")
     except smtplib.SMTPAuthenticationError:

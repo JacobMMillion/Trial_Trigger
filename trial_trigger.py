@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import re
 from apify_client import ApifyClient
 import smtplib
+from zoneinfo import ZoneInfo
 
 from get_comments import get_comments
 from get_comments import get_comments_about_app
@@ -123,7 +124,7 @@ def trial_trigger(app_name):
         if result:
             last_trial_value, last_event_time = result
             # Define a minimum required increase. For example, using the median value as the margin:
-            MIN_INCREASE_THRESHOLD = median_value / 4
+            MIN_INCREASE_THRESHOLD = median_value / 3
             THRESHOLD = MIN_INCREASE_THRESHOLD # update the threshold for when it is logged if it gets logged
             if current_trial_value - last_trial_value < MIN_INCREASE_THRESHOLD:
                 print("Increase since the last trigger event is not sufficient. Skipping trigger.")
@@ -164,7 +165,7 @@ def trial_trigger(app_name):
 
         # Call view scraper and pass the event ID.
         trigger_view_scraper(app_name, event_id)
-        send_notification_email(app_name.capitalize())
+        #send_notification_email(app_name.capitalize())
         return True
     else:
         print("No significant upward change detected; no trigger required.")
@@ -243,7 +244,7 @@ def process_video_row(row, event_id):
     """
     # Unpack all columns (id, post_url, creator_username, marketing_associate,
     # app, view_count, comment_count, caption, create_time, log_time, num_likes, share_count)
-    _, post_url, creator_username, marketing_associate, _, old_view_count, old_comment_count, caption, create_time, log_time, old_num_likes, old_num_shares = row
+    _, post_url, creator_username, marketing_associate, app, old_view_count, old_comment_count, caption, create_time, log_time, old_num_likes, old_num_shares = row
     print(f"Processing URL: {post_url}")
     print(f"  Previous Metrics -> Views: {old_view_count}, Comments: {old_comment_count}, Likes: {old_num_likes}, Shares: {old_num_shares}")
 
@@ -319,12 +320,48 @@ def process_video_row(row, event_id):
         cursor.close()
         conn.close()
         print(f"  Logged metrics delta for URL: {post_url}\n")
+
+        # Log new data to DailyVideoData, so if there is another trigger, we will use this entry as the base calculation
+        insert_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
+        log_to_dvd(post_url, creator_username, marketing_associate, app, new_view_count, new_comment_count, caption, create_time, insert_time, new_likes, new_shares)
+        print(f"  Logged updated row to DailyVideoData for URL: {post_url}\n")
+        
         return f"Processed {post_url}"
     except Exception as e:
         print(f"  Error logging metrics for URL {post_url}: {str(e)}\n")
         return f"Error processing {post_url}"
 
-
+def log_to_dvd(url, username, associate, app, view_count, comment_count, caption, created_at, insert_time, likes_count, share_count):
+    # Log these values in VideoMetricDeltas.
+    try:
+        conn = psycopg2.connect(CONN_STR)
+        cursor = conn.cursor()
+        query = """
+        INSERT INTO DailyVideoData 
+        (post_url, creator_username, marketing_associate, app, view_count, comment_count, caption, create_time, log_time, num_likes, share_count)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """
+        cursor.execute(query, (
+            url, 
+            username, 
+            associate, 
+            app, 
+            view_count, 
+            comment_count, 
+            caption, 
+            created_at, 
+            insert_time,
+            likes_count,
+            share_count
+        ))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"  Error logging to DailyVideoData for URL {url}: {str(e)}\n")
+        return
+                    
 
 def hit_apify(url):
 

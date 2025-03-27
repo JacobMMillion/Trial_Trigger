@@ -165,7 +165,7 @@ def trial_trigger(app_name):
 
         # Call view scraper and pass the event ID.
         trigger_view_scraper(app_name, event_id)
-        #send_notification_email(app_name.capitalize())
+        send_notification_email(app_name.capitalize())
         return True
     else:
         print("No significant upward change detected; no trigger required.")

@@ -124,7 +124,7 @@ def trial_trigger(app_name):
         if result:
             last_trial_value, last_event_time = result
             # Define a minimum required increase. For example, using the median value as the margin:
-            MIN_INCREASE_THRESHOLD = median_value * 3
+            MIN_INCREASE_THRESHOLD = (median_value * 1.5) + 50
             THRESHOLD = MIN_INCREASE_THRESHOLD # update the threshold for when it is logged if it gets logged
             if current_trial_value - last_trial_value < MIN_INCREASE_THRESHOLD:
                 print("Increase since the last trigger event is not sufficient. Skipping trigger.")

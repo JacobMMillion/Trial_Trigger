@@ -96,7 +96,7 @@ def trial_trigger(app_name):
     print(f"Historical median trial value (excluding current day): {median_value}")
     print(f"Current trial value: {current_trial_value}")
 
-    THRESHOLD = median_value * 1.2
+    THRESHOLD = median_value * 1.15
 
     # Trigger if exceeds threshold.
     if current_trial_value > THRESHOLD:
@@ -124,7 +124,7 @@ def trial_trigger(app_name):
         if result:
             last_trial_value, last_event_time = result
             # Define a minimum required increase. For example, using the median value as the margin:
-            MIN_INCREASE_THRESHOLD = (median_value * 1.5) + 50
+            MIN_INCREASE_THRESHOLD = (median_value) + 30
             THRESHOLD = MIN_INCREASE_THRESHOLD # update the threshold for when it is logged if it gets logged
             if current_trial_value - last_trial_value < MIN_INCREASE_THRESHOLD:
                 print("Increase since the last trigger event is not sufficient. Skipping trigger.")

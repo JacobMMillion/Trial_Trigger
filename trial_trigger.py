@@ -505,7 +505,7 @@ def send_notification_email(app):
     TO_EMAILS = [email.strip() for email in os.getenv("TO_EMAIL").split(',') if email.strip()]
     
     # Define email subject and message body.
-    timestamp = datetime.now().strftime("%b %d, %Y %I:%M %p")
+    timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%b %d, %Y %I:%M %p")
     subject = f"Trigger Event for {app} - {timestamp}"
     message = ("This app has had a number of new trials that exceeds the median for the past month.\n\n"
                "Check it out at the site:\n"

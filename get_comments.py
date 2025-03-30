@@ -7,14 +7,21 @@ import json
 from openai import OpenAI
 import tiktoken
 
-"""
-get_comments returns a json object where "text" is the list of comments
 
-log_comments logs the url and comments to the scraped_comments database, along with a timestamp
+
 """
 
+This module provides utilities to fetch and process comments from social media posts
+using Apify actors for Instagram and TikTok, and leverages OpenAI's API to filter comments 
+that are relevant to our apps. It also includes helper functions for counting tokens and 
+batching comments to respect token limits.
+
+"""
 
 
+# ----------------------------
+# Environment & Credentials Setup
+# ----------------------------
 load_dotenv()  # This loads the environment variables from the .env file into os.environ
 
 APIFY_API_KEY = os.environ.get("APIFY_API_KEY")
@@ -23,25 +30,22 @@ APIFY_CLIENT = ApifyClient(APIFY_API_KEY)
 CONN_STR = os.getenv('DATABASE_URL')
 
 
+# ----------------------------
+# FETCH COMMENTS FROM A SOCIAL MEDIA POST.
+# - SELECTS THE APPROPRIATE APIFY ACTOR BASED ON THE URL (INSTAGRAM OR TIKTOK).
+# - RETURNS A LIST OF COMMENT STRINGS.
+# ----------------------------
 def get_comments(url):
+
     """
-    Fetches comments from a social media post using the appropriate Apify actor
-    and retrieves the output data from the default dataset.
-    
     For Instagram:
       - Input is a JSON with "directUrls" and "resultsLimit".
     For TikTok:
       - Input is a JSON with "postURLs", "commentsPerPost", and "maxRepliesPerComment".
-    
-    After the run, it fetches the scraped comments from the dataset.
-    
-    Parameters:
-      url (str): The URL of the Instagram or TikTok post.
-    
-    Returns:
-      A list of comments
     """
+
     # Determine which actor and input to use based on the URL
+    # Return an empty array if Youtube or something else
     if "instagram.com" in url:
         actor_id = "apify/instagram-comment-scraper"
         run_input = {
@@ -56,7 +60,7 @@ def get_comments(url):
             "maxRepliesPerComment": 2     # Maximum number of replies per comment
         }
     else:
-        raise ValueError("Unsupported URL. Please provide an Instagram or TikTok URL.")
+        return []
     
 
     try:
@@ -83,54 +87,11 @@ def get_comments(url):
         return None
 
 
-
-def log_comments(url, comments):
-    """
-    Logs scraped comments into the scraped_comments table.
-
-    Parameters:
-      url (str): The URL for which comments were scraped.
-      comments (list): The list of comment objects.
-    """
-    try:
-        # Connect to PostgreSQL
-        conn = psycopg2.connect(CONN_STR)
-        cursor = conn.cursor()
-
-        # Get the current UTC time in ISO format
-        event_time = datetime.now(timezone.utc).isoformat()
-
-        # Convert the list of comments into a JSON string
-        comments_json = json.dumps(comments)
-
-        # Define the SQL to insert a new row
-        insert_event = """
-            INSERT INTO scraped_comments (
-                url,
-                comments,
-                log_date
-            ) VALUES (%s, %s, %s)
-            RETURNING id;
-        """
-
-        # Execute the insert statement
-        cursor.execute(insert_event, (url, comments_json, event_time))
-
-        # Fetch the auto-generated ID of the inserted row
-        event_id = cursor.fetchone()[0]
-
-        # Commit changes and close the connection
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-        print(f"Scraped comments logged with ID: {event_id}")
-    except Exception as e:
-        print(f"Error logging scraped comments: {str(e)}")
-        return False
-    
-
-
+# ----------------------------
+# COUNT TOKENS IN A GIVEN TEXT.
+# - USES TIKTOKEN WITH GPT-4 (cl100k_base ENCODING).
+# - RETURNS THE NUMBER OF TOKENS.
+# ----------------------------
 def count_tokens(text):
     # Setup tiktoken encoding for GPT-4 (using the "cl100k_base" encoding)
     encoding = tiktoken.get_encoding("cl100k_base")
@@ -138,6 +99,11 @@ def count_tokens(text):
     return len(encoding.encode(text))
 
 
+# ----------------------------
+# SPLIT COMMENTS INTO BATCHES BASED ON TOKEN LIMIT.
+# - ENSURES EACH BATCH, INCLUDING A FIXED PROMPT OVERHEAD, DOES NOT EXCEED THE MAX TOKEN LIMIT.
+# - RETURNS A LIST OF COMMENT BATCHES.
+# ----------------------------
 def split_into_batches(comments, max_tokens_per_batch=30000, prompt_overhead=200):
     """
     Splits a list of comment strings into batches where each batch's token count,
@@ -169,23 +135,15 @@ def split_into_batches(comments, max_tokens_per_batch=30000, prompt_overhead=200
     return batches
 
 
-"""
-Uses ChatGPT API to filter the comments to only those that may relate to the app, trial, or download
-"""
+# ----------------------------
+# FILTER COMMENTS RELATED TO THE APP USING THE OPENAI API.
+# - SPLITS COMMENTS INTO BATCHES TO STAY WITHIN TOKEN LIMITS.
+# - USES CHATGPT (GPT-4) TO FILTER COMMENTS THAT ARE RELEVANT TO ENGAGEMENT WITH THE APP.
+# - RETURNS THE FILTERED COMMENTS AS A LIST.
+# ----------------------------
 def get_comments_about_app(comments):
-    """
-    Uses the new OpenAI SDK to filter a list of comment strings,
-    returning only those comments that mention or relate to an app,
-    a trial, or a download. This function splits the input comments
-    into batches to stay within token limits before calling the API.
 
-    Parameters:
-        comments (list): A list of comment strings
-        
-    Returns:
-        list: Filtered comments as a list of strings.
-    """
-    # Instantiate the client using your API key from environment variables.
+    # Instantiate the client using API key from environment variables.
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     
     # Split comments into batches based on token limits.
@@ -193,6 +151,8 @@ def get_comments_about_app(comments):
     all_filtered_comments = []
     
     for batch in batches:
+
+        # NOTE: This prompt is maybe not great, and maybe TODO: we want a different one for each app. But maybe we move this anyways.
         prompt = (
             "Below is a list of comments from influencer posts promoting our apps: Astra (an astrology app), Haven (a bible app), "
             "Saga (a generative writing app), and Berry (a women's health app). Your task is to filter and return only those comments that "
@@ -206,7 +166,7 @@ def get_comments_about_app(comments):
         
         # Call the ChatCompletion endpoint.
         chat_completion = client.chat.completions.create(
-            model="gpt-4o",  # Use your desired model name.
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt},
@@ -233,7 +193,11 @@ def get_comments_about_app(comments):
 
 
 
-# Example usage
+# ----------------------------
+# EXAMPLE USAGE (MAIN)
+# - FETCH COMMENTS FROM A GIVEN POST URL (INSTAGRAM OR TIKTOK),
+#   FILTER THEM FOR APP-RELATED CONTENT, AND OPTIONALLY LOG THE RESULTS TO THE DATABASE.
+# ----------------------------
 if __name__ == "__main__":
     # Replace with an Instagram or TikTok post URL
 
@@ -248,9 +212,6 @@ if __name__ == "__main__":
 
     # # Filter comments to those that only relate to the app
     # filtered_comments = get_comments_about_app(comments)
-
-    # # # Log the comments to the database
-    # # log_comments(post_url, filtered_comments)
 
     # # Print
     # for comment in filtered_comments:

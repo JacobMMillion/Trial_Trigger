@@ -6,11 +6,32 @@ import re
 from apify_client import ApifyClient
 import smtplib
 from zoneinfo import ZoneInfo
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from get_comments import get_comments
 from get_comments import get_comments_about_app
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+"""
+
+This program monitors trial sign-up activity for various apps and triggers further data analysis when increased activity is detected. It:
+- Analyzes Trial Data: Checks the last 30 days of trial counts from a database and calculates the median value (excluding today's count). 
+  If today's trial count exceeds this median by a defined threshold, it proceeds.
+- Triggers Further Processing: When the threshold is exceeded, it logs a trigger event in the database, then initiates a process to update 
+  video metrics.
+- Updates Video Metrics: For videos from the past 10 days associated with the app, it concurrently retrieves updated metrics (views, 
+  comments, likes, shares) using the Apify API, calculates the changes (deltas) from previously recorded values, and logs these 
+  updated values back to `DailyVideoData`, and the delta information to the trigger event ('TrialTriggerEvents` and `VideoMetricDeltas`).
+- Sends Notifications: After processing, it sends an email notification alerting relevant parties of the trigger event.
+  Overall, the program automates monitoring of trial performance and, upon detecting significant increases, initiates a cascade of actions 
+  to update related video engagement metrics and alert the marketing team.
+
+"""
+
+
+# ----------------------------
+# Environment & Credentials Setup
+# ----------------------------
 
 # Load environment variables and set connection string.
 load_dotenv()
@@ -20,16 +41,13 @@ APIFY_API_KEY = os.environ.get("APIFY_API_KEY")
 APIFY_CLIENT = ApifyClient(APIFY_API_KEY)
 
 
+# ----------------------------
+# CHECK 30 DAYS OF TRIAL COUNTS FOR A GIVEN APP (GROUPED BY DATE) FROM THE `NewTrials` TABLE.
+# THIS TABLE LOGGED IN UTC
+# RETURNS TRUE IF TRIGGER FIRED
+# ----------------------------
 def trial_trigger(app_name):
-    """
-    Check the 30 days of trial counts (grouped by date) from the NewTrials table
-    for the specified app.
 
-    Logged in UTC. This is important as we use it as a check to see if there has been a log for
-    the day already.
-
-    Returns True if the trigger is fired; otherwise, False.
-    """
     # Determine our date range (last 30 days, including today)
     now = datetime.now(timezone.utc).date()  # current UTC date
     start_date = now - timedelta(days=29)    # 30 days total
@@ -165,25 +183,27 @@ def trial_trigger(app_name):
 
         # Call view scraper and pass the event ID.
         trigger_view_scraper(app_name, event_id)
+
+        # Senda  notification email
         send_notification_email(app_name.capitalize())
+
+        # And finally, return True as the trigger fired
         return True
+    
     else:
         print("No significant upward change detected; no trigger required.")
         return False
     
 
-
+# ----------------------------
+# AGGREGATE VIDEO RECORDS FROM THE `DailyVideoData` TABLE FOR THE PAST 10 DAYS.
+# FOR EACH `post_url`, SELECT THE MOST RECENT LOG (BASED ON `log_time`)
+# ALONG WITH ADDITIONAL COLUMNS: `view_count`, `comment_count`, `caption`,
+# `create_time`, `log_time`, AND `num_likes`.
+# ----------------------------
 def trigger_view_scraper(app_name, event_id):
-    """
-    Iterate over the DailyVideoData table and aggregate all video records
-    (using the post_url column) from the past 10 days for the given app.
-    For each post_url, select only the most recent log (based on log_time)
-    along with additional columns (view_count, comment_count, caption,
-    create_time, log_time, num_likes). Then print the results sorted by
-    create_time descending.
-    """
 
-    # capitalize first letter
+    # Capitalize first letter of the app, as this is how it is logged in `DailyVideoData`
     app_name = app_name.capitalize()
 
     # Calculate threshold: 10 days ago (using UTC)
@@ -226,7 +246,7 @@ def trigger_view_scraper(app_name, event_id):
     print("Processing videos from the past 10 days:")
 
     # Process each row concurrently.
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         future_to_row = {executor.submit(process_video_row, row, event_id): row for row in rows}
         for future in as_completed(future_to_row):
             row = future_to_row[future]
@@ -237,13 +257,17 @@ def trigger_view_scraper(app_name, event_id):
                 print(f"Error processing URL {row[1]}: {e}")
 
     
+# ----------------------------
+# PROCESS A SINGLE VIDEO ROW:
+# - FETCH NEW METRICS VIA APIFY FOR THE GIVEN URL.
+# - CALCULATE DELTAS BETWEEN NEW AND OLD METRIC VALUES (views, comments, likes, shares).
+# - RETRIEVE COMMENTS AND FILTER THEM TO EXTRACT APP-RELATED FEEDBACK.
+# - UPDATE THE `VideoMetricDeltas` TABLE WITH THE METRIC DIFFERENCES.
+# - LOG THE UPDATED METRICS TO THE `DailyVideoData` TABLE FOR FUTURE REFERENCE.
+# ----------------------------
 def process_video_row(row, event_id):
-    """
-    Process a single video row: fetch new metrics via Apify,
-    calculate deltas, retrieve comments, and update the VideoMetricDeltas table.
-    """
-    # Unpack all columns (id, post_url, creator_username, marketing_associate,
-    # app, view_count, comment_count, caption, create_time, log_time, num_likes, share_count)
+
+    # Unpack columns from the previous event
     _, post_url, creator_username, marketing_associate, app, old_view_count, old_comment_count, caption, create_time, log_time, old_num_likes, old_num_shares = row
     print(f"Processing URL: {post_url}")
     print(f"  Previous Metrics -> Views: {old_view_count}, Comments: {old_comment_count}, Likes: {old_num_likes}, Shares: {old_num_shares}")
@@ -321,7 +345,7 @@ def process_video_row(row, event_id):
         conn.close()
         print(f"  Logged metrics delta for URL: {post_url}\n")
 
-        # Log new data to DailyVideoData, so if there is another trigger, we will use this entry as the base calculation
+        # Log new data to `DailyVideoData`, so if there is another trigger, we will use this updated entry as the base calculation
         insert_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
         log_to_dvd(post_url, creator_username, marketing_associate, app, new_view_count, new_comment_count, caption, create_time, insert_time, new_likes, new_shares)
         print(f"  Logged updated row to DailyVideoData for URL: {post_url}\n")
@@ -331,8 +355,14 @@ def process_video_row(row, event_id):
         print(f"  Error logging metrics for URL {post_url}: {str(e)}\n")
         return f"Error processing {post_url}"
 
+
+# ----------------------------
+# LOG THE UPDATED VIDEO METRICS TO THE `DailyVideoData` TABLE.
+# NOTE: IF THE STRUCTRE OF THE TABLE IS CHANGED, THIS ALONG WITH `run_apify_update.py` and `db_manager.py`
+# WOULD NEED TO BE UDPATED. THESE ARE THE ENTRY POINTS FOR NEW LOGS IN `DailyVideoData` TABLE
+# ----------------------------
 def log_to_dvd(url, username, associate, app, view_count, comment_count, caption, created_at, insert_time, likes_count, share_count):
-    # Log these values in VideoMetricDeltas.
+
     try:
         conn = psycopg2.connect(CONN_STR)
         cursor = conn.cursor()
@@ -363,6 +393,9 @@ def log_to_dvd(url, username, associate, app, view_count, comment_count, caption
         return
                     
 
+# ----------------------------
+# HIT APIFY FOR A URL, AND RETURN THE METRICS
+# ----------------------------
 def hit_apify(url):
 
     tiktok_regex = r"tiktok"
@@ -460,8 +493,11 @@ def hit_apify(url):
         return None
 
 
-
+# ----------------------------
+# SEND A NOTIFICATION EMAIL
+# ----------------------------
 def send_notification_email(app):
+
     # Load environment variables
     FROM_EMAIL = os.getenv("FROM_EMAIL")
     PASSWORD = os.getenv("APP_EMAIL_PW")
@@ -494,9 +530,11 @@ def send_notification_email(app):
         print(f"An error occurred: {e}")
 
 
-
-# MAIN, run for each app
+# ----------------------------
+# MAIN, CHECK WHETHER TRIGGER SHOULD BE FIRED FOR EACH APP
+# ----------------------------
 if __name__ == "__main__":
+
     # Define your app names properly
     APP_NAMES = ["saga", "berry", "haven", "astra"]
 
@@ -509,6 +547,7 @@ if __name__ == "__main__":
             print(app, ": Threshold NOT exceeded, NOT running scraper")
         print("--------------------------")
 
+    # # DEBUG / RETROACTIVE ROW ADDITION, this will probably not be used
     # # If need to add something retroactively, can do so like this:
     # row = 0, "https://www.tiktok.com/@emymoore3/video/7485054202415451438?lang=en", "emymoore3", "Dylano", "Haven", 131000, 120, None, None, None, 29800, 506
     # process_video_row(row, 529)

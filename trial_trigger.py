@@ -185,7 +185,7 @@ def trial_trigger(app_name):
         trigger_view_scraper(app_name, event_id)
 
         # Senda  notification email
-        send_notification_email(app_name.capitalize())
+        send_notification_email(app_name.capitalize(), event_id)
 
         # And finally, return True as the trigger fired
         return True
@@ -496,31 +496,77 @@ def hit_apify(url):
 # ----------------------------
 # SEND A NOTIFICATION EMAIL
 # ----------------------------
-def send_notification_email(app):
+def send_notification_email(app, event_id):
+
+    vids = get_top_three(event_id)
 
     # Load environment variables
     FROM_EMAIL = os.getenv("FROM_EMAIL")
     PASSWORD = os.getenv("APP_EMAIL_PW")
-    # Assume TO_EMAIL is a comma-separated string of email addresses
     TO_EMAILS = [email.strip() for email in os.getenv("TO_EMAIL").split(',') if email.strip()]
-    
-    # Define email subject and message body.
+
+    # Define email subject
     timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%b %d, %Y %I:%M %p")
-    subject = f"Trigger Event for {app} - {timestamp}"
-    message = ("This app has had a number of new trials that exceeds the median for the past month.\n\n"
-               "Check it out at the site:\n"
-               "https://website-5g58.onrender.com/trial_upticks\n\n"
-               "-Jacob Automated Message")
-    
-    # Create the email content
-    email_content = f"Subject: {subject}\n\n{message}"
-    
+    subject = f"Trial Trigger Event for {app} - {timestamp}"
+
+    # Build the HTML message as a plain string (no extra imports)
+    html_message = (
+        "<html>"
+          "<head>"
+            "<style>"
+              ".card { width: 14rem; margin: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); display: inline-block; background-color: rgba(124,235,157,0.4); border-radius: 10px; }"
+              ".card-body { padding: 10px; }"
+              ".card-subtitle { font-size: 0.95rem; color: #6c757d; }"
+              ".card-text { font-size: 0.9rem; }"
+              ".card-link { text-decoration: none; color: #007bff; }"
+              ".container { text-align: center; }"
+              ".big-link { font-size: 1.5rem; font-weight: bold; }"
+            "</style>"
+          "</head>"
+          "<body>"
+            "<p>This app has had a number of new trials that exceeds the median for the past month.</p>"
+            "<p>Below are the top three videos for this event:</p>"
+            "<div class='container'>"
+              "<u><h3>Top Trending Videos For This Event</h3></u>"
+              "<div>"
+    )
+
+    # Loop through each video and create a card
+    for vid in vids:
+        card_html = (
+            "<div class='card'>"
+              "<div class='card-body'>"
+                f"<h6 class='card-subtitle'>{vid.get('creator_username', 'Unknown Creator')}</h6>"
+                "<p class='card-text'>"
+                  f"<strong>&Delta; Views:</strong> {vid.get('delta_views', 0):,}<br>"
+                  f"<strong>&Delta; Comments:</strong> {vid.get('delta_comments', 0):,}<br>"
+                  f"<strong>&Delta; Likes:</strong> {vid.get('delta_likes', 0):,}<br>"
+                  f"<strong>&Delta; Shares:</strong> {vid.get('delta_shares', 0):,}"
+                "</p>"
+                f"<a href='{vid['post_url']}' class='card-link' target='_blank'>View Post</a>"
+              "</div>"
+            "</div>"
+        )
+        html_message += card_html
+
+    # Finish the HTML message with a larger "Check it out" link and closing signature
+    html_message += (
+              "</div>"
+            "</div>"
+            f"<p class='big-link'>Check it out: <a href='https://website-5g58.onrender.com/video_metrics/{event_id}'>Video Metrics</a></p>"
+            "<p>-Trial Uptick Automated Message</p>"
+          "</body>"
+        "</html>"
+    )
+
+    # Manually build email content with a Content-Type header for HTML
+    email_content = f"Subject: {subject}\nContent-Type: text/html\n\n{html_message}"
+
     try:
         print(f"Sending email to {TO_EMAILS}...")
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login(FROM_EMAIL, PASSWORD)
-        # server.sendmail accepts a list for the recipient field
         server.sendmail(FROM_EMAIL, TO_EMAILS, email_content)
         server.quit()
         print("Email sent successfully!")
@@ -528,6 +574,66 @@ def send_notification_email(app):
         print("Failed to authenticate. Check your email/password.")
     except Exception as e:
         print(f"An error occurred: {e}")
+
+
+# ----------------------------
+# GET THE TOP THREE VIDEOS TO BE USED IN THE NOTIFICATION EMAIL
+# ----------------------------
+def get_top_three(event_id):
+
+    try:
+        conn = psycopg2.connect(CONN_STR)
+        cursor = conn.cursor()
+
+        # Videos for the trigger event
+        query = """
+            SELECT *
+            FROM VideoMetricDeltas
+            WHERE trial_trigger_event_id = %s
+            ORDER BY id ASC;
+        """
+        cursor.execute(query, (event_id,))
+        rows = cursor.fetchall()
+        headers = [desc[0] for desc in cursor.description]
+
+        # Convert rows to a list of dictionaries.
+        video_metrics = [dict(zip(headers, row)) for row in rows]
+
+        # Convert the event row to a dictionary (so you can display its fields easily in the template)
+        event_details = dict(zip(headers, rows)) if rows else {}
+
+        # Define a function to calculate the score.
+        # NOTE: THIS SHOULD BE IDENTICAL TO THE SCORING CALCULATION IN get_engagement in server.py. Otherwise will be inconsistent
+        def calculate_score(metric):
+            delta_views = metric.get('delta_views') or 0
+            delta_comments = metric.get('delta_comments') or 0
+            delta_likes = metric.get('delta_likes') or 0
+            delta_shares = metric.get('delta_shares') or 0
+            return delta_views + delta_comments + (delta_likes * 5) + (delta_shares * 10)
+
+        # First, calculate and store the raw score for each metric.
+        for metric in video_metrics:
+            metric['raw_score'] = calculate_score(metric)
+
+        # Calculate the total raw score.
+        total_raw_score = sum(metric['raw_score'] for metric in video_metrics)
+
+        # Now, compute the normalized score for each metric.
+        for metric in video_metrics:
+            metric['score'] = round((metric['raw_score'] / total_raw_score) * 100, 3)
+
+        # Sort the metrics by score in descending order.
+        video_metrics_sorted = sorted(video_metrics, key=lambda m: m['score'], reverse=True)
+
+        first_three = video_metrics_sorted[:3]
+
+        return first_three
+
+
+    except Exception as e:
+        print("Error obtaining data for the trigger event top three\n")
+        return []
+
 
 
 # ----------------------------
@@ -547,7 +653,10 @@ if __name__ == "__main__":
             print(app, ": Threshold NOT exceeded, NOT running scraper")
         print("--------------------------")
 
-    # # DEBUG / RETROACTIVE ROW ADDITION, this will probably not be used
+    # # EMAIL TESTING
+    # send_notification_email("Testing", 926)
+
+    # # DEBUG / RETROACTIVE ROW ADDITION, this will probably not be used again
     # # If need to add something retroactively, can do so like this:
     # row = 0, "https://www.tiktok.com/@emymoore3/video/7485054202415451438?lang=en", "emymoore3", "Dylano", "Haven", 131000, 120, None, None, None, 29800, 506
     # process_video_row(row, 529)

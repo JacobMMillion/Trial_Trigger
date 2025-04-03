@@ -114,7 +114,7 @@ def trial_trigger(app_name):
     print(f"Historical median trial value (excluding current day): {median_value}")
     print(f"Current trial value: {current_trial_value}")
 
-    THRESHOLD = median_value * 1.15
+    THRESHOLD = median_value
 
     # Trigger if exceeds threshold.
     if current_trial_value > THRESHOLD:

@@ -114,7 +114,7 @@ def trial_trigger(app_name):
     print(f"Historical median trial value (excluding current day): {median_value}")
     print(f"Current trial value: {current_trial_value}")
 
-    THRESHOLD = median_value
+    THRESHOLD = median_value * .75 # threshold is 75% of the median
 
     # Trigger if exceeds threshold.
     if current_trial_value > THRESHOLD:
@@ -185,7 +185,7 @@ def trial_trigger(app_name):
         trigger_view_scraper(app_name, event_id)
 
         # Senda  notification email
-        send_notification_email(app_name.capitalize(), event_id)
+        send_notification_email(app_name.capitalize(), event_id, current_trial_value)
 
         # And finally, return True as the trigger fired
         return True
@@ -499,7 +499,7 @@ def hit_apify(url):
 # ----------------------------
 # SEND A NOTIFICATION EMAIL
 # ----------------------------
-def send_notification_email(app, event_id):
+def send_notification_email(app, event_id, current_trial_value):
 
     vids = get_top_three(event_id)
 
@@ -527,7 +527,7 @@ def send_notification_email(app, event_id):
             "</style>"
           "</head>"
           "<body>"
-            "<p>This app has had a number of new trials that exceeds the median for the past month.</p>"
+            "<p>This app has seen a significant increase in the number of new trials today.</p>"
             "<p>Below are the top three videos for this event:</p>"
             "<div class='container'>"
               "<u><h3>Top Trending Videos For This Event</h3></u>"

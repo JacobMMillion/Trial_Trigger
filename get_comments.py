@@ -51,13 +51,16 @@ def get_comments(url):
         run_input = {
             "directUrls": [url],
             "resultsLimit": 15,  # Number of comments to retrieve
+            "isNewestComments": True,
         }
     elif "tiktok.com" in url:
         actor_id = "clockworks/tiktok-comments-scraper"
         run_input = {
             "postURLs": [url],
             "commentsPerPost": 15,       # Number of comments to retrieve
-            "maxRepliesPerComment": 2     # Maximum number of replies per comment
+            "maxRepliesPerComment": 2,     # Maximum number of replies per comment
+            # "profileSorting" : "latest" # NOTE: this does not sort the comments by recency
+            # it seems there is no way to get recent comments, even with other actors
         }
     else:
         return []
@@ -202,10 +205,14 @@ if __name__ == "__main__":
     # Replace with an Instagram or TikTok post URL
 
     # # Example for Tiktok
-    # post_url = "https://www.tiktok.com/@andrea.bookster/video/7464988020970769695"
+    # post_url = "https://www.tiktok.com/@tarot_tea_carly/video/7487277927500107038"
 
-    # # Example for Instagram
+    # # # Example for Instagram
     # # post_url = "https://www.instagram.com/reel/DDSO9TCvA75/"
+    # comms = get_comments(post_url)
+    # for com in comms:
+    #     print(com)
+    #     print("****************")
 
     # # Fetch comments from the post
     # comments = ["Astra is a cool app!", "This should not be picked up", "I tried this app and liked it!", "It is not free, only a 7 day trial", "Astrology is cool", "Your account is a haven of safety for me"]

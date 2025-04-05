@@ -286,12 +286,15 @@ def process_video_row(row, event_id):
     delta_likes = new_likes - old_num_likes if new_likes is not None else None
     delta_shares = new_shares - old_num_shares if new_shares is not None else None
 
-    # Get the app comments.
-    comments = get_comments(post_url)
-    print("Comments:", comments)
-    app_comments = get_comments_about_app(comments)
-    print("App Comments:", app_comments)
-    print("Got comments, and filtered to those about the app.")
+    # NOTE: We used to get the comments for each URL. This is expensive, and better done in one go, as opposed to repeatedly here
+    # SO WE NO LONGER DO THIS HERE.
+    # # Get the app comments.
+    # comments = get_comments(post_url)
+    # print("Comments:", comments)
+    # app_comments = get_comments_about_app(comments)
+    # print("App Comments:", app_comments)
+    # print("Got comments, and filtered to those about the app.")
+    app_comments = None
 
     print(f"  Updated Metrics -> Views: {new_view_count}, Comments: {new_comment_count}, Likes: {new_likes}, Shares: {new_shares}")
     print(f"  Deltas          -> ΔViews: {delta_views}, ΔComments: {delta_comments}, ΔLikes: {delta_likes}, ΔShares: {delta_shares}\n")

@@ -19,7 +19,7 @@ This program monitors trial sign-up activity for various apps and triggers furth
   If today's trial count exceeds this median by a defined threshold, it proceeds.
 - Triggers Further Processing: When the threshold is exceeded, it logs a trigger event in the database, then initiates a process to update 
   video metrics.
-- Updates Video Metrics: For videos from the past 10 days associated with the app, it concurrently retrieves updated metrics (views, 
+- Updates Video Metrics: For videos from the past 21 days associated with the app, it concurrently retrieves updated metrics (views, 
   comments, likes, shares) using the Apify API, calculates the changes (deltas) from previously recorded values, and logs these 
   updated values back to `DailyVideoData`, and the delta information to the trigger event ('TrialTriggerEvents` and `VideoMetricDeltas`).
 - Sends Notifications: After processing, it sends an email notification alerting relevant parties of the trigger event.
@@ -206,14 +206,14 @@ def trigger_view_scraper(app_name, event_id):
     # Capitalize first letter of the app, as this is how it is logged in `DailyVideoData`
     app_name = app_name.capitalize()
 
-    # Calculate threshold: 10 days ago (using UTC)
-    threshold_date = datetime.now(timezone.utc) - timedelta(days=10)
+    # Calculate threshold: 21 days ago (using UTC)
+    threshold_date = datetime.now(timezone.utc) - timedelta(days=21)
 
     # Connect to the database
     conn = psycopg2.connect(CONN_STR)
     cursor = conn.cursor()
 
-    # Use DISTINCT ON to get, for each post_url posted in last 10 days, the row with the latest log_time.
+    # Use DISTINCT ON to get, for each post_url posted in last 21 days, the row with the latest log_time.
     query = """
         SELECT DISTINCT ON (post_url)
             id,
@@ -243,10 +243,10 @@ def trigger_view_scraper(app_name, event_id):
     cursor.close()
     conn.close()
 
-    print("Processing videos from the past 10 days:")
+    print("Processing videos from the past 21 days:")
 
     # Process each row concurrently.
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_row = {executor.submit(process_video_row, row, event_id): row for row in rows}
         for future in as_completed(future_to_row):
             row = future_to_row[future]

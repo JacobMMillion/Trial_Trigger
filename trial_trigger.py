@@ -286,6 +286,10 @@ def process_video_row(row, event_id):
     delta_likes = new_likes - old_num_likes if new_likes is not None else None
     delta_shares = new_shares - old_num_shares if new_shares is not None else None
 
+    if delta_views is not None and delta_views < 0:
+        print(f"  Skipping URL {post_url} due to negative delta views ({delta_views}).")
+        return f"Skipped {post_url} due to negative delta views"
+
     # NOTE: We used to get the comments for each URL. This is expensive, and better done in one go, as opposed to repeatedly here
     # SO WE NO LONGER DO THIS HERE.
     # # Get the app comments.
@@ -661,5 +665,5 @@ if __name__ == "__main__":
 
     # # DEBUG / RETROACTIVE ROW ADDITION, this will probably not be used again
     # # If need to add something retroactively, can do so like this:
-    # row = 0, "https://www.tiktok.com/@emymoore3/video/7485054202415451438?lang=en", "emymoore3", "Dylano", "Haven", 131000, 120, None, None, None, 29800, 506
-    # process_video_row(row, 529)
+    # row = 0, "https://www.tiktok.com/@piperrockelle/video/7491073331660180778", "piperrockelle", "Dylano", "Haven", 0, 0, None, None, None, 0, 0
+    # process_video_row(row, 1916)

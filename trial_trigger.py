@@ -11,23 +11,29 @@ from get_comments import get_comments
 from get_comments import get_comments_about_app
 
 
-
 """
+This program monitors trial sign-up activity for various apps and triggers further data analysis when increased activity is detected.
 
-This program monitors trial sign-up activity for various apps and triggers further data analysis when increased activity is detected. It:
-- Analyzes Trial Data: Checks the last 30 days of trial counts from a database and calculates the median value (excluding today's count). 
-  If today's trial count exceeds this median by a defined threshold, it proceeds.
-- Triggers Further Processing: When the threshold is exceeded, it logs a trigger event in the database, then initiates a process to update 
-  video metrics.
-- Updates Video Metrics: For videos from the past 21 days associated with the app, it concurrently retrieves updated metrics (views, 
-  comments, likes, shares) using the Apify API, calculates the changes (deltas) from previously recorded values, and logs these 
-  updated values back to `DailyVideoData`, and the delta information to the trigger event ('TrialTriggerEvents` and `VideoMetricDeltas`).
-- Sends Notifications: After processing, it sends an email notification alerting relevant parties of the trigger event.
-  Overall, the program automates monitoring of trial performance and, upon detecting significant increases, initiates a cascade of actions 
-  to update related video engagement metrics and alert the marketing team.
+– Daily Trigger:
+  * Looks at the last 30 days of trial counts (UTC), grouped by calendar date.
+  * Computes the median of the first 29 days (excluding today).
+  * Fires if today’s count exceeds 75% of that median.
+  * If already fired today, requires an additional Δ of (median_value * .75 + 200) above the prior trigger’s count.
 
+– Hourly Trigger:
+  * Looks at the last 3 full days (72 hours) of trial counts (UTC), grouped by hour.
+  * Computes the median of the first 71 hours.
+  * Fires if the most recent full hour’s count exceeds 1.5× that median plus 5.
+  * Ensures only one hourly event per UTC hour.
+
+– When either trigger fires:
+  1. Logs a new row in `TrialTriggerEvents` with type = 'daily' or 'hourly'.
+  2. Runs `trigger_view_scraper` to fetch and delta‐compute video metrics for the past 21 days.
+  3. Inserts those deltas into `VideoMetricDeltas` and updates `DailyVideoData`.
+  4. Sends an email notification summarizing the top three videos for that event.
+
+Environment, DB connection, and credentials are loaded via `.env`. Uses psycopg2 for Postgres, Apify for scraping video metrics, and SMTP for notifications.
 """
-
 
 # ----------------------------
 # Environment & Credentials Setup
@@ -40,13 +46,166 @@ CONN_STR = os.getenv('DATABASE_URL')
 APIFY_API_KEY = os.environ.get("APIFY_API_KEY")
 APIFY_CLIENT = ApifyClient(APIFY_API_KEY)
 
+# ----------------------------
+# DRIVER FUNCTION
+# FIRST TRIES TO TRIGGER FOR DAILY
+# IF DAILY TRIGGER DOES NOT FIRE, THEN TRIES TO TRIGGER FOR HOURLY
+# RETURNS TRUE IF EITHER TRIGGER IS FIRED
+# ----------------------------
+def trial_trigger(app_name):
+    print(f"Checking daily trigger for {app_name}...")
+
+    # First, check the daily trigger
+    if daily_trigger(app_name):
+        print(f"Daily trigger fired for {app_name}.")
+        return True
+
+    # If daily trigger did not fire, check hourly trigger
+    print(f"Daily trigger did not fire for {app_name}. Checking hourly trigger...")
+    
+    if hourly_trigger(app_name):
+        print(f"Hourly trigger fired for {app_name}.")
+        return True
+    
+    print(f"No significant activity detected for {app_name}. No triggers fired.")
+    return False
+
+# ----------------------------
+# CHECK 3 DAYS OF TRIAL COUNTS FOR A GIVEN APP (GROUPED BY HOUR) FROM THE `NewTrials` TABLE.
+# THIS TABLE LOGGED IN UTC
+# IF THE PAST (full) HOUR TRIAL #s EXCEEDS THE (HISTORICAL MEDIAN + 50%, essentially 1.5x) HOURLY TRIAL COUNT, TRIGGER FIRES
+# RETURNS TRUE IF TRIGGER FIRED
+# ----------------------------
+def hourly_trigger(app_name):
+    # 1) Establish our 3-day window, rounded to the current hour
+    now = datetime.now(timezone.utc)
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    start_time   = current_hour - timedelta(days=3)  # 72 hours back
+
+    # 2) Fetch counts per hour from NewTrials
+    upper_bound = current_hour + timedelta(hours=1)
+    conn = psycopg2.connect(CONN_STR)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+          date_trunc('hour', original_purchase_date_dt) AS trial_hour,
+          COUNT(*) AS trial_count
+        FROM NewTrials
+        WHERE app_name = %s
+          AND original_purchase_date_dt >= %s
+          AND original_purchase_date_dt <  %s
+        GROUP BY trial_hour
+        ORDER BY trial_hour
+    """, (app_name, start_time, upper_bound))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    # 3) Build a full 72-hour dict, defaulting to 0
+    hourly_counts = {}
+    for i in range(72):
+        slot = start_time + timedelta(hours=i)
+        hourly_counts[slot] = 0
+    # Fill in actual counts
+    for trial_hour, count in rows:
+        # Ensure timezone‐aware
+        if trial_hour.tzinfo is None:
+            trial_hour = trial_hour.replace(tzinfo=timezone.utc)
+        
+        trial_hour = trial_hour.replace(minute=0, second=0, microsecond=0)
+
+        # Only overwrite if we pre-seeded that slot
+        # CRITICAL: This ensures we only count the full hours that have passed (otherwise indexing -1 can be inconsistent)
+        if trial_hour in hourly_counts:
+            hourly_counts[trial_hour] = count
+
+    # 4) Sort and split into historical vs. current
+    sorted_hours = sorted(hourly_counts.keys())
+    counts       = [hourly_counts[hr] for hr in sorted_hours]
+    if len(counts) < 2:
+        print("Not enough data for hourly median.")
+        return False
+
+    historical = counts[:-1]         # first 71 hours
+    current    = counts[-1]         # latest hour (the latest hour that has passed in entirety - not the technical current hour)
+    median_val = (
+      sorted(historical)[len(historical)//2]
+      if len(historical)%2==1
+      else (sorted(historical)[len(historical)//2 - 1] 
+          + sorted(historical)[len(historical)//2]) / 2
+    )
+    threshold  = median_val * 1.5 + 5
+
+    print(f"Hourly window: {sorted_hours[0]} → {sorted_hours[-1]}")
+    print("Counts per hour:")
+    for hr, cnt in zip(sorted_hours, counts):
+        print(f"  {hr.isoformat()}: {cnt}")
+    print(f"Historical median (past 71h): {median_val}")
+    print(f"Threshold (1.5× median + 5): {threshold}")
+    print(f"Current hour count: {current}")
+
+    # 5) Only fire if we exceed threshold
+    if current <= threshold:
+        print("No spike this hour; skipping.")
+        return False
+
+    # 6) Check if we've already fired this hour
+    conn = psycopg2.connect(CONN_STR)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 1
+          FROM TrialTriggerEvents
+         WHERE app = %s
+           AND event_type = 'hourly'
+           AND date_trunc('hour', event_time) = %s
+         LIMIT 1
+    """, (app_name, current_hour))
+    already = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if already:
+        print("Hourly trigger already logged for this hour; skipping.")
+        return False
+
+    # 7) Log the new hourly event
+    conn = psycopg2.connect(CONN_STR)
+    cursor = conn.cursor()
+    event_time = datetime.now(timezone.utc)
+    cursor.execute("""
+        INSERT INTO TrialTriggerEvents
+          (event_time, trial_count, average_delta, current_delta,
+           threshold, app, event_type)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
+        RETURNING id
+    """, (
+        event_time,
+        current,    # trial count this hour
+        None,       # average_delta (unused)
+        None,       # current_delta (unused)
+        threshold,
+        app_name,
+        'hourly'
+    ))
+    event_id = cursor.fetchone()[0]
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print(f"Logged hourly trigger event ID {event_id}.")
+
+    # 8) Fire downstream actions
+    trigger_view_scraper(app_name, event_id)
+    send_notification_email(app_name.capitalize(), event_id, 'hourly')
+
+    return True
+
 
 # ----------------------------
 # CHECK 30 DAYS OF TRIAL COUNTS FOR A GIVEN APP (GROUPED BY DATE) FROM THE `NewTrials` TABLE.
 # THIS TABLE LOGGED IN UTC
+# IF TODAY'S TRIAL COUNT EXCEEDS 75% OF THE HISTORICAL MEDIAN DAILY TRIAL COUNT (EXCLUDING TODAY), TRIGGER FIRES
 # RETURNS TRUE IF TRIGGER FIRED
 # ----------------------------
-def trial_trigger(app_name):
+def daily_trigger(app_name):
 
     # Determine our date range (last 30 days, including today)
     now = datetime.now(timezone.utc).date()  # current UTC date
@@ -111,22 +270,23 @@ def trial_trigger(app_name):
     for dt, count in zip(sorted_dates, counts):
         print(f"  {dt.isoformat()}: {count}")
 
-    print(f"Historical median trial value (excluding current day): {median_value}")
-    print(f"Current trial value: {current_trial_value}")
-
     THRESHOLD = median_value * .75 # threshold is 75% of the median
+
+    print(f"Historical median daily trial value (excluding current day): {median_value}")
+    print(f"Threshold: {THRESHOLD}")
+    print(f"Current daily trial value: {current_trial_value}")
 
     # Trigger if exceeds threshold.
     if current_trial_value > THRESHOLD:
 
-        # Check the most recent trigger event for this app.
+        # Check the most recent DAILY trigger event for this app.
         try:
             conn = psycopg2.connect(CONN_STR)
             cursor = conn.cursor()
             check_query = """
                 SELECT trial_count, event_time
                 FROM TrialTriggerEvents
-                WHERE app = %s AND event_time::date = %s
+                WHERE app = %s AND event_time::date = %s AND event_type = 'daily'
                 ORDER BY event_time DESC
                 LIMIT 1;
             """
@@ -138,7 +298,7 @@ def trial_trigger(app_name):
             print(f"Error checking trial trigger events: {str(e)}")
             return False
 
-        # If there is a previous event for the current day, only trigger if the current trial count has increased sufficiently.
+        # If there is a previous DAILY event for the current day, only trigger if the current trial count has increased sufficiently.
         if result:
             last_trial_value, last_event_time = result
 
@@ -149,10 +309,9 @@ def trial_trigger(app_name):
             THRESHOLD = last_trial_value + MIN_INCREASE_THRESHOLD
             
             if current_trial_value < THRESHOLD:
-                print("Increase since the last trigger event is not sufficient. Skipping trigger.")
                 return False
 
-        # Proceed to log the event since no recent trigger or the increase is sufficient.
+        # Proceed to log the event since increase is sufficient in either case (previous daily trigger or not).
         try:
             conn = psycopg2.connect(CONN_STR)
             cursor = conn.cursor()
@@ -164,8 +323,9 @@ def trial_trigger(app_name):
                     average_delta,
                     current_delta,
                     threshold,
-                    app
-                ) VALUES (%s, %s, %s, %s, %s, %s)
+                    app,
+                    event_type
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id;
             """
             cursor.execute(insert_event, (
@@ -174,7 +334,8 @@ def trial_trigger(app_name):
                 None,
                 None,
                 THRESHOLD,
-                app_name
+                app_name,
+                "daily"  # Indicate this is a daily trigger
             ))
             event_id = cursor.fetchone()[0]
             conn.commit()
@@ -189,13 +350,12 @@ def trial_trigger(app_name):
         trigger_view_scraper(app_name, event_id)
 
         # Senda  notification email
-        send_notification_email(app_name.capitalize(), event_id, current_trial_value)
+        send_notification_email(app_name.capitalize(), event_id, "daily")
 
         # And finally, return True as the trigger fired
         return True
     
     else:
-        print("No significant upward change detected; no trigger required.")
         return False
     
 
@@ -507,14 +667,19 @@ def hit_apify(url):
 # ----------------------------
 # SEND A NOTIFICATION EMAIL
 # ----------------------------
-def send_notification_email(app, event_id, current_trial_value):
-
+def send_notification_email(app, event_id, event_type):
     vids = get_top_three(event_id)
+
+    # decide wording based on event_type
+    if event_type == 'hourly':
+        timeframe = 'in the past hour'
+    else:
+        timeframe = 'today'
 
     # Load environment variables
     FROM_EMAIL = os.getenv("FROM_EMAIL")
-    PASSWORD = os.getenv("APP_EMAIL_PW")
-    TO_EMAILS = [email.strip() for email in os.getenv("TO_EMAIL").split(',') if email.strip()]
+    PASSWORD   = os.getenv("APP_EMAIL_PW")
+    TO_EMAILS  = [email.strip() for email in os.getenv("TO_EMAIL").split(',') if email.strip()]
 
     # Define email subject
     timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%b %d, %Y %I:%M %p")
@@ -535,7 +700,7 @@ def send_notification_email(app, event_id, current_trial_value):
             "</style>"
           "</head>"
           "<body>"
-            "<p>This app has seen a significant increase in the number of new trials today.</p>"
+            f"<p>This app has seen a significant increase in the number of new trials {timeframe}.</p>"
             "<p>Below are the top three videos for this event:</p>"
             "<div class='container'>"
               "<u><h3>Top Trending Videos For This Event</h3></u>"

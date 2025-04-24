@@ -53,18 +53,18 @@ APIFY_CLIENT = ApifyClient(APIFY_API_KEY)
 # RETURNS TRUE IF EITHER TRIGGER IS FIRED
 # ----------------------------
 def trial_trigger(app_name):
-    print(f"Checking daily trigger for {app_name}...")
+    print(f"---Checking daily trigger for {app_name}...---")
 
     # First, check the daily trigger
     if daily_trigger(app_name):
-        print(f"Daily trigger fired for {app_name}.")
+        print(f"---Daily trigger fired for {app_name}.---")
         return True
 
     # If daily trigger did not fire, check hourly trigger
-    print(f"Daily trigger did not fire for {app_name}. Checking hourly trigger...")
+    print(f"---Daily trigger did not fire for {app_name}. Checking hourly trigger...---")
     
     if hourly_trigger(app_name):
-        print(f"Hourly trigger fired for {app_name}.")
+        print(f"---Hourly trigger fired for {app_name}.---")
         return True
     
     print(f"No significant activity detected for {app_name}. No triggers fired.")
@@ -149,7 +149,9 @@ def hourly_trigger(app_name):
         print("No spike this hour; skipping.")
         return False
 
-    # 6) Check if we've already fired this hour
+    # 6) Skip if any hourly trigger in the past 2 hours
+    two_hours_ago = current_hour - timedelta(hours=2)
+
     conn = psycopg2.connect(CONN_STR)
     cursor = conn.cursor()
     cursor.execute("""
@@ -157,14 +159,14 @@ def hourly_trigger(app_name):
           FROM TrialTriggerEvents
          WHERE app = %s
            AND event_type = 'hourly'
-           AND date_trunc('hour', event_time) = %s
+           AND event_time >= %s
          LIMIT 1
-    """, (app_name, current_hour))
+    """, (app_name, two_hours_ago))
     already = cursor.fetchone()
     cursor.close()
     conn.close()
     if already:
-        print("Hourly trigger already logged for this hour; skipping.")
+        print("An hourly trigger fired in the last 2 hours; skipping.")
         return False
 
     # 7) Log the new hourly event
@@ -821,13 +823,13 @@ if __name__ == "__main__":
     APP_NAMES = ["saga", "berry", "haven", "astra"]
 
     for app in APP_NAMES:
-        print("--------------------------")
+        print("=================================")
         print("Looking at metrics for: ", app)
         if trial_trigger(app):
             print(app, ": Threshold exceeded, running scraper")
         else:
             print(app, ": Threshold NOT exceeded, NOT running scraper")
-        print("--------------------------")
+        print("=================================")
 
     # # EMAIL TESTING
     # send_notification_email("Testing", 926)

@@ -149,8 +149,8 @@ def hourly_trigger(app_name):
         print("No spike this hour; skipping.")
         return False
 
-    # 6) Skip if any hourly trigger in the past 2 hours
-    two_hours_ago = current_hour - timedelta(hours=2)
+    # 6) Skip if any hourly trigger in the past 3 hours
+    three_hours_ago = current_hour - timedelta(hours=3)
 
     conn = psycopg2.connect(CONN_STR)
     cursor = conn.cursor()
@@ -161,12 +161,12 @@ def hourly_trigger(app_name):
            AND event_type = 'hourly'
            AND event_time >= %s
          LIMIT 1
-    """, (app_name, two_hours_ago))
+    """, (app_name, three_hours_ago))
     already = cursor.fetchone()
     cursor.close()
     conn.close()
     if already:
-        print("An hourly trigger fired in the last 2 hours; skipping.")
+        print("An hourly trigger fired in the last 3 hours; skipping.")
         return False
 
     # 7) Log the new hourly event

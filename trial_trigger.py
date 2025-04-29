@@ -14,17 +14,19 @@ from get_comments import get_comments_about_app
 """
 This program monitors trial sign-up activity for various apps and triggers further data analysis when increased activity is detected.
 
+DEPRECATED:
 – Daily Trigger:
   * Looks at the last 30 days of trial counts (UTC), grouped by calendar date.
   * Computes the median of the first 29 days (excluding today).
   * Fires if today’s count exceeds 75% of that median.
   * If already fired today, requires an additional Δ of (median_value * .75 + 200) above the prior trigger’s count.
 
+THIS IS LIVE:
 – Hourly Trigger:
   * Looks at the last 3 full days (72 hours) of trial counts (UTC), grouped by hour.
   * Computes the median of the first 71 hours.
-  * Fires if the most recent full hour’s count exceeds 1.5× that median plus 5.
-  * Ensures only one hourly event per UTC hour.
+  * Fires if the most recent full hour’s count exceeds 1.25× that median plus 4 and is a 2 hour peak.
+  * Ensures only one hourly event per 3 UTC hours.
 
 – When either trigger fires:
   1. Logs a new row in `TrialTriggerEvents` with type = 'daily' or 'hourly'.
@@ -73,7 +75,8 @@ def trial_trigger(app_name):
 # ----------------------------
 # CHECK 3 DAYS OF TRIAL COUNTS FOR A GIVEN APP (GROUPED BY HOUR) FROM THE `NewTrials` TABLE.
 # THIS TABLE LOGGED IN UTC
-# IF THE PAST (full) HOUR TRIAL #s EXCEEDS THE (HISTORICAL MEDIAN + 50%, essentially 1.5x) HOURLY TRIAL COUNT, TRIGGER FIRES
+# IF THE PAST (full) HOUR TRIAL #s EXCEEDS THE (HISTORICAL MEDIAN + 25%, essentially 1.25x) + 4 HOURLY TRIAL COUNT, TRIGGER FIRES 
+# ALSO ENSURES THAT THE CURRENT HOUR IS A PEAK VS THE LAST 2 HOURS AND HASN'T BEEN AN EVENT WITHIN THE PAST 3 HOURS
 # RETURNS TRUE IF TRIGGER FIRED
 # ----------------------------
 def hourly_trigger(app_name):
@@ -134,19 +137,26 @@ def hourly_trigger(app_name):
       else (sorted(historical)[len(historical)//2 - 1] 
           + sorted(historical)[len(historical)//2]) / 2
     )
-    threshold  = median_val * 1.5 + 3
+    threshold  = median_val * 1.25 + 4
 
     print(f"Hourly window: {sorted_hours[0]} → {sorted_hours[-1]}")
     print("Counts per hour:")
     for hr, cnt in zip(sorted_hours, counts):
         print(f"  {hr.isoformat()}: {cnt}")
     print(f"Historical median (past 71h): {median_val}")
-    print(f"Threshold (1.5× median + 5): {threshold}")
+    print(f"Threshold (1.25× median + 4): {threshold}")
     print(f"Current hour count: {current}")
 
     # 5) Only fire if we exceed threshold
     if current <= threshold:
         print("No spike this hour; skipping.")
+        return False
+    
+    # Only fire if we are at a peak vs the last 2 hours
+    prev1 = counts[-2]   # 1 hour ago
+    prev2 = counts[-3]   # 2 hours ago
+    if not (current > prev1 and current > prev2):
+        print("Not a peak vs. last 3h; skipping trigger.")
         return False
 
     # 6) Skip if any hourly trigger in the past 3 hours

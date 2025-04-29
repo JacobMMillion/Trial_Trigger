@@ -53,16 +53,16 @@ APIFY_CLIENT = ApifyClient(APIFY_API_KEY)
 # RETURNS TRUE IF EITHER TRIGGER IS FIRED
 # ----------------------------
 def trial_trigger(app_name):
-    print(f"---Checking daily trigger for {app_name}...---")
-
-    # First, check the daily trigger
-    if daily_trigger(app_name):
-        print(f"---Daily trigger fired for {app_name}.---")
-        return True
-
+    # print(f"---Checking daily trigger for {app_name}...---")
+    # # First, check the daily trigger
+    # if daily_trigger(app_name):
+    #     print(f"---Daily trigger fired for {app_name}.---")
+    #     return True
     # If daily trigger did not fire, check hourly trigger
-    print(f"---Daily trigger did not fire for {app_name}. Checking hourly trigger...---")
+    # print(f"---Daily trigger did not fire for {app_name}. Checking hourly trigger...---")
     
+    print("---Checking hourly trigger for", app_name, "...---")
+    print("---We no longer check for a daily trigger---")
     if hourly_trigger(app_name):
         print(f"---Hourly trigger fired for {app_name}.---")
         return True
@@ -134,7 +134,7 @@ def hourly_trigger(app_name):
       else (sorted(historical)[len(historical)//2 - 1] 
           + sorted(historical)[len(historical)//2]) / 2
     )
-    threshold  = median_val * 1.5 + 5
+    threshold  = median_val * 1.5 + 3
 
     print(f"Hourly window: {sorted_hours[0]} → {sorted_hours[-1]}")
     print("Counts per hour:")

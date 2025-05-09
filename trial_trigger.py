@@ -25,7 +25,7 @@ THIS IS LIVE:
 – Hourly Trigger:
   * Looks at the last 3 full days (72 hours) of trial counts (UTC), grouped by hour.
   * Computes the median of the first 71 hours.
-  * Fires if the most recent full hour's count exceeds 1.5× that median plus 4 and is a 2 hour peak.
+  * Fires if the most recent full hour's count exceeds 1.35× that median plus 4 and is a 2 hour peak.
   * Ensures only one hourly event per 3 UTC hours.
 
 – When either trigger fires:
@@ -137,14 +137,14 @@ def hourly_trigger(app_name):
       else (sorted(historical)[len(historical)//2 - 1] 
           + sorted(historical)[len(historical)//2]) / 2
     )
-    threshold  = median_val * 1.5 + 4
+    threshold  = median_val * 1.35 + 4
 
     print(f"Hourly window: {sorted_hours[0]} → {sorted_hours[-1]}")
     print("Counts per hour:")
     for hr, cnt in zip(sorted_hours, counts):
         print(f"  {hr.isoformat()}: {cnt}")
     print(f"Historical median (past 71h): {median_val}")
-    print(f"Threshold (1.5× median + 4): {threshold}")
+    print(f"Threshold (1.35× median + 4): {threshold}")
     print(f"Current hour count: {current}")
 
     # 5) Only fire if we exceed threshold

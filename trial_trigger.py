@@ -10,6 +10,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from get_comments import get_comments
 from get_comments import get_comments_about_app
 
+# Google Sheets
+import gspread
+from google.oauth2.service_account import Credentials
+
 
 """
 This program monitors trial sign-up activity for various apps and triggers further data analysis when increased activity is detected.
@@ -212,6 +216,79 @@ def hourly_trigger(app_name):
 
 
 # ----------------------------
+# Get active campaigns from the "Campaign Tracker" sheet, "TikTok Campaigns" tab.
+# Returns a list of active campaign URLs for that app.
+# ----------------------------
+def get_active_campaign_urls(app_name):
+    """
+    Get active campaigns for a specific app from the
+    "Campaign Tracker" sheet, "Tiktok Campaigns" tab.
+    Returns a list of active campaign URLs for that app.
+    """
+    # normalize the app filter
+    app_name = app_name.strip().lower()
+
+    SERVICE_ACCOUNT_INFO = {
+    "type": "service_account",
+    "project_id": os.environ.get("GCLOUD_PROJECT_ID"),
+    "private_key_id": os.environ.get("GCLOUD_PRIVATE_KEY_ID"),
+    "private_key": os.environ.get("GCLOUD_PRIVATE_KEY").replace("\\n", "\n"),
+    "client_email": os.environ.get("GCLOUD_CLIENT_EMAIL"),
+    "client_id": os.environ.get("GCLOUD_CLIENT_ID"),
+    "auth_uri": os.environ.get("GCLOUD_AUTH_URI"),
+    "token_uri": os.environ.get("GCLOUD_TOKEN_URI"),
+    "auth_provider_x509_cert_url": os.environ.get("GCLOUD_AUTH_PROVIDER_X509_CERT_URL"),
+    "client_x509_cert_url": os.environ.get("GCLOUD_CLIENT_X509_CERT_URL")
+    }
+
+    SCOPES = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
+    client = gspread.authorize(creds)
+
+    # open the sheet
+    campaign_url = "https://docs.google.com/spreadsheets/d/1o3XjJUg4rYf7JFgw0bwCFMeJ0J8N26B29jcPoG-6wOE/edit?gid=0#gid=0"
+    try:
+        ss = client.open_by_url(campaign_url)
+        ws = ss.worksheet("Tiktok Campaigns")
+    except Exception as e:
+        print(f"Error opening spreadsheet: {e}")
+        return []
+
+    all_values = ws.get_all_values()
+    if not all_values:
+        return []
+
+    headers = all_values[0]
+    try:
+        url_col    = headers.index("Video URL") + 1
+        status_col = headers.index("Status")    + 1
+        app_col    = headers.index("App")       + 1
+    except ValueError:
+        print("Required columns 'Video URL', 'Status', or 'App' not found")
+        return []
+
+    active_urls = []
+    for row in all_values[1:]:
+        # skip short rows
+        if len(row) < max(url_col, status_col, app_col):
+            continue
+
+        status_val = row[status_col - 1].strip().lower()
+        app_val    = row[app_col    - 1].strip().lower()
+
+        # only include if both match
+        if status_val == "active" and app_val == app_name:
+            url = row[url_col - 1]
+            if url:
+                active_urls.append(url)
+
+    return active_urls
+
+
+# ----------------------------
 # CHECK 30 DAYS OF TRIAL COUNTS FOR A GIVEN APP (GROUPED BY DATE) FROM THE `NewTrials` TABLE.
 # THIS TABLE LOGGED IN UTC
 # IF TODAY'S TRIAL COUNT EXCEEDS 75% OF THE HISTORICAL MEDIAN DAILY TRIAL COUNT (EXCLUDING TODAY), TRIGGER FIRES
@@ -372,7 +449,7 @@ def daily_trigger(app_name):
     
 
 # ----------------------------
-# AGGREGATE VIDEO RECORDS FROM THE `DailyVideoData` TABLE FOR THE PAST 10 DAYS.
+# AGGREGATE VIDEO RECORDS FROM THE `DailyVideoData` TABLE FOR THE PAST 21 DAYS (and active campaigns from google sheets).
 # FOR EACH `post_url`, SELECT THE MOST RECENT LOG (BASED ON `log_time`)
 # ALONG WITH ADDITIONAL COLUMNS: `view_count`, `comment_count`, `caption`,
 # `create_time`, `log_time`, AND `num_likes`.
@@ -385,11 +462,19 @@ def trigger_view_scraper(app_name, event_id):
     # Calculate threshold: 21 days ago (using UTC)
     threshold_date = datetime.now(timezone.utc) - timedelta(days=21)
 
+    print(f"Threshold date: {threshold_date}")
+
     # Connect to the database
     conn = psycopg2.connect(CONN_STR)
     cursor = conn.cursor()
 
+    # get the rows where the URL is in the list of active campaigns, but we do not have it here.
+    active_campaigns = get_active_campaign_urls(app_name) # returns a list of URLS
+
+    print(f"Active campaigns: {active_campaigns}")
+
     # Use DISTINCT ON to get, for each post_url posted in last 21 days, the row with the latest log_time.
+    # Alternatively, if the url is in the list of active campaigns, we want to get the row with the latest log_time regardless of when it was posted.
     query = """
         SELECT DISTINCT ON (post_url)
             id,
@@ -405,11 +490,15 @@ def trigger_view_scraper(app_name, event_id):
             num_likes,
             share_count
         FROM DailyVideoData
-        WHERE create_time >= %s AND app = %s
+        WHERE app = %s
+          AND (
+                create_time >= %s
+             OR post_url   = ANY(%s)
+          )
         ORDER BY post_url, log_time DESC;
     """
 
-    cursor.execute(query, (threshold_date, app_name))
+    cursor.execute(query, (app_name, threshold_date, active_campaigns))
     rows = cursor.fetchall()
 
     # Optional: sort the rows by create_time descending (most recent first)
